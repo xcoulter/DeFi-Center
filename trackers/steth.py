@@ -8,12 +8,12 @@ STETH_CONTRACT = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 TRANSFER_SIG   = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 WEI_PER_STETH  = 10**18
 
-# Start search near stETH launch to avoid scanning from genesis
+# Start around stETH launch to avoid scanning from genesis
 STETH_GENESIS_UTC = datetime(2020, 12, 1, tzinfo=timezone.utc)
 
-# ---------------- RPC helpers (with light retry/backoff) ----------------
+# ---------------- RPC helpers (light retry/backoff) ----------------
 
-def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 18.0):
+def _rpc(infura_url: str, method: str, params, tries: int = 3, timeout: float = 12.0):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     backoff = 0.6
     last_err = None
@@ -24,7 +24,8 @@ def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 
             js = r.json()
             if "error" in js:
                 last_err = js["error"]
-                time.sleep(backoff); backoff = min(backoff * 1.8, 8.0); continue
+                time.sleep(backoff); backoff = min(backoff * 1.8, 8.0)
+                continue
             return js["result"]
         except Exception as e:
             last_err = str(e)
@@ -65,10 +66,10 @@ def _balance_of(infura_url: str, wallet: str, block_num: int) -> int:
     res = _rpc(infura_url, "eth_call", [{"to": STETH_CONTRACT, "data": selector}, hex(block_num)])
     return int(res, 16)
 
-# ---------------- Logs (chunked per day to avoid free-tier issues) ----------------
+# ---------------- Logs (chunked per day; friendly to free tier) ----------------
 
 def _get_logs_chunked(infura_url: str, start_block: int, end_block: int, topics,
-                      stop_at_first: bool = False, chunk_size: int = 5000):
+                      stop_at_first: bool = False, chunk_size: int = 2500):
     out = []
     b = start_block
     while b <= end_block:
@@ -119,6 +120,7 @@ def _find_first_nonzero_balance_block(infura_url: str, wallet: str) -> int | Non
 
 def _sum_transfers(infura_url: str, wallet: str, start_block: int, end_block: int):
     wtopic = "0x" + "0"*24 + wallet.lower()[2:]
+    TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
     in_logs  = _get_logs_chunked(infura_url, start_block, end_block, [TRANSFER_SIG, None, wtopic]) or []
     out_logs = _get_logs_chunked(infura_url, start_block, end_block, [TRANSFER_SIG, wtopic]) or []
 
