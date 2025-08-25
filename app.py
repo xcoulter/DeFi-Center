@@ -8,10 +8,10 @@ from trackers.aave  import get_aave_interest
 st.set_page_config(page_title="DeFi Center", layout="wide")
 st.title("💸 DeFi Center")
 
-# Read Infura URL from Secrets or env
+# Read Infura URL from Secrets or env (no network calls at import time)
 INFURA_URL = st.secrets.get("INFURA_URL", os.getenv("INFURA_URL", "")).strip()
 if not INFURA_URL:
-    st.warning("Set INFURA_URL in Streamlit Secrets or environment. Ex: https://mainnet.infura.io/v3/<KEY>")
+    st.warning("Set INFURA_URL in Streamlit Secrets or environment. Example: https://mainnet.infura.io/v3/<KEY>")
 
 wallet = st.text_input("Enter your Ethereum wallet address:", help="0x… (checksum or lowercase is fine)")
 
@@ -28,7 +28,7 @@ with tab1:
     if wallet and INFURA_URL and run:
         try:
             with st.spinner("Locating first stETH activity and computing daily balances, transfers, and rebases…"):
-                df = _cached_rebases(wallet, INFURA_URL)   # ✅ only called after button click
+                df = _cached_rebases(wallet, INFURA_URL)  # ✅ only runs after button click
         except Exception as e:
             st.error(f"Failed to compute rebases: {e}")
         else:
@@ -56,12 +56,16 @@ with tab2:
             mime="text/csv"
         )
 
-# Optional: quick RPC health check
+# Optional: quick RPC health check (no heavy calls)
 with st.expander("🔧 Provider health check"):
     if st.button("Test RPC"):
         import requests
         try:
-            r = requests.post(INFURA_URL, json={"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}, timeout=10)
+            r = requests.post(
+                INFURA_URL,
+                json={"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
+                timeout=10
+            )
             r.raise_for_status()
             js = r.json()
             if "result" in js:
