@@ -8,7 +8,7 @@ STETH_CONTRACT = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 TRANSFER_SIG   = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 WEI_PER_STETH  = 10**18
 
-# Use a conservative lower bound near stETH launch to avoid scanning from genesis.
+# Start search near stETH launch to avoid scanning from genesis
 STETH_GENESIS_UTC = datetime(2020, 12, 1, tzinfo=timezone.utc)
 
 # ---------------- RPC helpers (with light retry/backoff) ----------------
@@ -16,17 +16,20 @@ STETH_GENESIS_UTC = datetime(2020, 12, 1, tzinfo=timezone.utc)
 def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 18.0):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     backoff = 0.6
+    last_err = None
     for _ in range(tries):
         try:
             r = requests.post(infura_url, json=payload, timeout=timeout)
             r.raise_for_status()
             js = r.json()
             if "error" in js:
+                last_err = js["error"]
                 time.sleep(backoff); backoff = min(backoff * 1.8, 8.0); continue
             return js["result"]
-        except Exception:
+        except Exception as e:
+            last_err = str(e)
             time.sleep(backoff); backoff = min(backoff * 1.8, 8.0)
-    raise RuntimeError(f"RPC failed: {method}")
+    raise RuntimeError(f"RPC failed: {method} ({last_err})")
 
 def _latest_block(infura_url: str) -> int:
     return int(_rpc(infura_url, "eth_blockNumber", []), 16)
@@ -62,7 +65,7 @@ def _balance_of(infura_url: str, wallet: str, block_num: int) -> int:
     res = _rpc(infura_url, "eth_call", [{"to": STETH_CONTRACT, "data": selector}, hex(block_num)])
     return int(res, 16)
 
-# ---------------- Logs (chunked to avoid Infura free-tier limits) ----------------
+# ---------------- Logs (chunked per day to avoid free-tier issues) ----------------
 
 def _get_logs_chunked(infura_url: str, start_block: int, end_block: int, topics,
                       stop_at_first: bool = False, chunk_size: int = 5000):
@@ -84,56 +87,33 @@ def _get_logs_chunked(infura_url: str, start_block: int, end_block: int, topics,
         b = e + 1
     return out
 
-def _first_log_in_range(infura_url: str, wallet: str, lo: int, hi: int):
-    """Return earliest block (int) in [lo,hi] with a Transfer to/from wallet, else None."""
-    wtopic = "0x" + "0"*24 + wallet.lower()[2:]
-    cand = None
+# ------------- Find earliest non-zero stETH balance (log-free, robust) -------------
 
-    # inbound
-    li = _get_logs_chunked(infura_url, lo, hi, [TRANSFER_SIG, None, wtopic], stop_at_first=True)
-    if li:
-        cand = int(li[0]["blockNumber"], 16)
-
-    # outbound
-    lo2 = _get_logs_chunked(infura_url, lo, hi, [TRANSFER_SIG, wtopic], stop_at_first=True)
-    if lo2:
-        b2 = int(lo2[0]["blockNumber"], 16)
-        cand = b2 if cand is None else min(cand, b2)
-
-    return cand
-
-# ------------- Find earliest stETH activity for a wallet (chunked + refine) -------------
-
-def _find_first_activity_block(infura_url: str, wallet: str) -> int | None:
+def _find_first_nonzero_balance_block(infura_url: str, wallet: str) -> int | None:
+    """
+    Find earliest block with balanceOf(wallet) > 0 by binary searching blocks.
+    Much lighter than log scans; works on Infura free.
+    """
     latest = _latest_block(infura_url)
     if latest == 0:
         return None
 
-    # Start scanning near stETH launch to reduce range.
-    start_ts = int(STETH_GENESIS_UTC.timestamp())
-    lo = _block_by_time(infura_url, start_ts, "after")
+    # lower bound = block at ~Dec 1, 2020 (stETH launch era)
+    genesis_ts = int(STETH_GENESIS_UTC.timestamp())
+    lo = _block_by_time(infura_url, genesis_ts, "after")
     if lo <= 0: lo = 1
+    hi = latest
 
-    SPAN = 50000  # scan window
-    cur = lo
-    while cur <= latest:
-        hi = min(latest, cur + SPAN - 1)
-        first = _first_log_in_range(infura_url, wallet, cur, hi)
-        if first is not None:
-            # refine with binary search inside [cur, first]
-            ans, L, R = first, cur, first
-            while L <= R:
-                mid = (L + R) // 2
-                hit = _first_log_in_range(infura_url, wallet, L, mid)
-                if hit is not None:
-                    ans = min(ans, hit)
-                    R = hit - 1
-                else:
-                    L = mid + 1
-            return ans
-        cur = hi + 1
-
-    return None
+    ans = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        bal = _balance_of(infura_url, wallet, mid)
+        if bal > 0:
+            ans = mid
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return ans
 
 # ------------- Sum transfers for a day (same math as your Apps Script) -------------
 
@@ -150,18 +130,19 @@ def _sum_transfers(infura_url: str, wallet: str, start_block: int, end_block: in
         out_wei += int(l["data"], 16)
     return in_wei, out_wei
 
-# ------------- Public function: full history from first activity -------------
+# ------------- Public: full history from first activity (via first non-zero balance) -------------
 
 def get_steth_rebases_from_first_activity(wallet: str, infura_url: str | None = None) -> pd.DataFrame:
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
         raise RuntimeError("Missing INFURA_URL")
 
-    first_block = _find_first_activity_block(infura_url, wallet)
+    first_block = _find_first_nonzero_balance_block(infura_url, wallet)
     if first_block is None:
+        # No stETH ever held
         return pd.DataFrame([])
 
-    # Day 0 = UTC date of first activity
+    # Day 0 = UTC date of first non-zero balance
     first_blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(first_block), False])
     first_ts = int(first_blk_obj["timestamp"], 16)
     start_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).date()
