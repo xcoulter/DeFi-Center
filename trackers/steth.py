@@ -150,6 +150,7 @@ def _iterate_days(start_dt: date, end_dt: date):
 def get_steth_rebases_range(wallet: str, start_iso: str, end_iso: str, infura_url: str | None = None) -> pd.DataFrame:
     """
     Compute daily stETH rebases for [start_iso, end_iso] inclusive (UTC dates, 'YYYY-MM-DD').
+    Math: rebase = (end_bal - start_bal) - (sum_in - sum_out)
     """
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
@@ -165,7 +166,7 @@ def get_steth_rebases_range(wallet: str, start_iso: str, end_iso: str, infura_ur
 
     rows = []
     for d in _iterate_days(start_dt, end_dt):
-        # Day bounds (UTC)
+        # UTC day bounds
         start_ts = int(datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc).timestamp())
         end_ts   = int(datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
         if start_ts > latest_ts:
