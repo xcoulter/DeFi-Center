@@ -222,8 +222,8 @@ with aave_tabs[0]:
     # Input: aUSDC contract (v2/v3 differ)
     ausdc_addr = st.text_input(
         "aUSDC contract address",
-        value="0xBcca60bB61934080951369a648Fb03DF4F96263C",  # mainnet v2
-        help="Default is Aave v2 aUSDC. Replace with v3 if needed.",
+        value="0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c",  # mainnet v2
+        help="Default is Aave v3 aUSDC. Replace with v2 if needed.",
     )
 
     # Session state
