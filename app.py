@@ -216,145 +216,175 @@ with proto_tabs[0]:
 # ======================================================
 #                        AAVE
 # ======================================================
-with aave_tabs[0]:
-    st.subheader("aUSDC Interest — run by date range (≤ 180 days per run)")
+with proto_tabs[1]:
+    st.header("Aave")
 
-    # Input: aUSDC contract (v2/v3 differ)
-    ausdc_addr = st.text_input(
-        "aUSDC contract address",
-        value="0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c",  # mainnet v2
-        help="Default is Aave v3 aUSDC. Replace with v2 if needed.",
-    )
+    # ------- Presets (Aave v3 mainnet) -------
+    AAVE_V3_PRESETS = {
+        "aUSDC v3 (6)":   {"address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c", "decimals": 6},
+        "aDAI v3 (18)":   {"address": "0x018008bfb33d285247A21d44E50697654f754e63", "decimals": 18},
+        "aWETH v3 (18)":  {"address": "0xE0bCe3f16E2a9e06d0Dda3aA6884A54792F5BcE0", "decimals": 18},
+        "awstETH v3 (18)":{"address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371", "decimals": 18},
+        # Add more v3 aTokens here as needed
+    }
 
-    # Session state
-    if "ausdc_accum" not in st.session_state:
-        st.session_state["ausdc_accum"] = pd.DataFrame()
-    if "ausdc_first_activity" not in st.session_state:
-        st.session_state["ausdc_first_activity"] = None
+    # ------- User's saved tokens (session-scoped) -------
+    if "aave_my_tokens" not in st.session_state:
+        # Seed with presets initially (user can edit over time)
+        st.session_state["aave_my_tokens"] = {k: v.copy() for k, v in AAVE_V3_PRESETS.items()}
 
-    # Find first activity button
-    if st.button("Find first aUSDC activity"):
-        if not wallet or not INFURA_URL or not ausdc_addr:
-            st.error("Enter wallet + aUSDC address + INFURA_URL.")
-        else:
+    aave_tabs = st.tabs(["aToken Interest (v3)"])
+
+    with aave_tabs[0]:
+        st.subheader("aToken Interest — daily accrual (non-rebasing)")
+
+        col0, col1, col2 = st.columns([2, 2, 2])
+        with col0:
+            preset_label = st.selectbox("Pick an aToken (v3 mainnet presets)", list(AAVE_V3_PRESETS.keys()))
+        with col1:
+            if st.button("➕ Add to My tokens"):
+                st.session_state["aave_my_tokens"][preset_label] = AAVE_V3_PRESETS[preset_label]
+                st.success(f"Added {preset_label} to My tokens")
+        with col2:
+            # Let user choose from their saved tokens
+            my_labels = list(st.session_state["aave_my_tokens"].keys())
+            active_label = st.selectbox("My tokens", my_labels, index=my_labels.index(preset_label) if preset_label in my_labels else 0)
+
+        active = st.session_state["aave_my_tokens"][active_label]
+        atoken_addr = st.text_input("aToken contract", value=active["address"])
+        token_decimals = st.number_input("Token decimals", value=active["decimals"], min_value=0, max_value=36, step=1)
+
+        # Save any edits back to "My tokens"
+        st.session_state["aave_my_tokens"][active_label] = {"address": atoken_addr, "decimals": int(token_decimals)}
+
+        # Session accumulators for results
+        if "atoken_accum" not in st.session_state:
+            st.session_state["atoken_accum"] = pd.DataFrame()
+        if "atoken_first_activity" not in st.session_state:
+            st.session_state["atoken_first_activity"] = None
+
+        # First-activity finder
+        if st.button("Find first activity for selected aToken"):
+            if not wallet or not INFURA_URL:
+                st.error("Enter wallet + INFURA_URL.")
+            else:
+                try:
+                    fa = get_first_activity_date_atoken(wallet, atoken_addr, INFURA_URL)
+                    st.session_state["atoken_first_activity"] = fa
+                    if fa is None:
+                        st.info("No activity found for this aToken.")
+                    else:
+                        st.success(f"First activity (UTC): {fa.isoformat()}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        # Date window helpers
+        today = date.today()
+        yday = today - timedelta(days=1)
+        accum = st.session_state["atoken_accum"]
+        first_activity = st.session_state["atoken_first_activity"]
+
+        def day_after_last_accum_any():
+            if accum.empty:
+                return first_activity or (yday - timedelta(days=179))
+            last_iso = str(accum["date"].max())
             try:
-                fa = get_first_activity_date_ausdc(wallet, ausdc_addr, INFURA_URL)
-                st.session_state["ausdc_first_activity"] = fa
-                if fa is None:
-                    st.info("No aUSDC activity found for this wallet.")
-                else:
-                    st.success(f"First aUSDC activity (UTC): {fa.isoformat()}")
-            except Exception as e:
-                st.error(f"Error: {e}")
+                last_d = datetime.strptime(last_iso, "%Y-%m-%d").date()
+            except Exception:
+                last_d = yday - timedelta(days=179)
+            return min(last_d + timedelta(days=1), yday)
 
-    today = date.today()
-    yday = today - timedelta(days=1)
-    accum = st.session_state["ausdc_accum"]
-    first_activity = st.session_state["ausdc_first_activity"]
+        suggested_start = day_after_last_accum_any()
+        suggested_end   = min(suggested_start + timedelta(days=179), yday)
 
-    def day_after_last_accum_ausdc():
-        if accum.empty:
-            return first_activity or (yday - timedelta(days=179))
-        last_iso = str(accum["date"].max())
-        try:
-            last_d = datetime.strptime(last_iso, "%Y-%m-%d").date()
-        except Exception:
-            last_d = yday - timedelta(days=179)
-        return min(last_d + timedelta(days=1), yday)
+        c1, c2 = st.columns(2)
+        with c1:
+            start_dt = st.date_input("Start date (UTC)", value=suggested_start, max_value=yday, key="atoken_start")
+        with c2:
+            end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
 
-    suggested_start = day_after_last_accum_ausdc()
-    suggested_end   = min(suggested_start + timedelta(days=179), yday)
+        stream_rows_atoken = st.toggle("Stream rows live (update after each day)", value=True, key="atoken_stream")
+        st.caption("Interest = (end_balance − start_balance) − withdrawals + deposits. Deposits/withdrawals come from mint/burn events.")
 
-    r1, r2 = st.columns(2)
-    with r1:
-        start_dt = st.date_input("Start date (UTC)", value=suggested_start, max_value=yday, key="ausdc_start")
-    with r2:
-        end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="ausdc_end")
+        @st.cache_data(show_spinner=False, ttl=900)
+        def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str, rpc_url: str, dec: int) -> pd.DataFrame:
+            return get_atoken_interest_range(wallet_addr, token, start_iso, end_iso, infura_url=rpc_url, decimals=dec)
 
-    @st.cache_data(show_spinner=False, ttl=900)
-    def _cached_ausdc(wallet_addr: str, token: str, start_iso: str, end_iso: str, rpc_url: str) -> pd.DataFrame:
-        return get_ausdc_interest_range(wallet_addr, token, start_iso, end_iso, infura_url=rpc_url)
+        # Actions
+        a1, a2, a3 = st.columns([1, 1, 1])
+        with a1:
+            run = st.button("Compute this range", key="run_atoken_range")
+        with a2:
+            run_next = st.button("Compute next window", key="run_atoken_next")
+        with a3:
+            if st.button("Clear accumulated results", key="clear_atoken_accum"):
+                st.session_state["atoken_accum"] = pd.DataFrame()
+                st.success("Cleared.")
+                accum = st.session_state["atoken_accum"]
 
-    # Actions
-    a1, a2, a3 = st.columns([1, 1, 1])
-    with a1:
-        run = st.button("Compute this range", key="run_ausdc_range")
-    with a2:
-        run_next = st.button("Compute next window", key="run_ausdc_next")
-    with a3:
-        if st.button("Clear accumulated results", key="clear_ausdc_accum"):
-            st.session_state["ausdc_accum"] = pd.DataFrame()
-            st.success("Cleared.")
-            accum = st.session_state["ausdc_accum"]
+        if run_next:
+            s = day_after_last_accum_any()
+            e = min(s + timedelta(days=179), yday)
+            start_dt, end_dt = s, e
+            run = True
 
-    if run_next:
-        s = day_after_last_accum_ausdc()
-        e = min(s + timedelta(days=179), yday)
-        start_dt, end_dt = s, e
-        run = True
+        # Executor (row-by-row like stETH)
+        def run_window_and_stream_atoken(start_dt: date, end_dt: date):
+            total_days = (end_dt - start_dt).days + 1
+            if total_days <= 0:
+                st.info("Empty window."); return
+            if total_days > 180:
+                st.error(f"Window too large: {total_days} days. Please run ≤ 180 days."); return
 
-    def run_window_and_stream_ausdc(start_dt: date, end_dt: date):
-        total_days = (end_dt - start_dt).days + 1
-        if total_days <= 0:
-            st.info("Empty window.")
-            return
-        if total_days > 180:
-            st.error(f"Window too large: {total_days} days. Please run ≤ 180 days per call.")
-            return
+            table_ph = st.empty()
+            status_ph = st.empty()
+            prog = st.progress(0, text="Starting…")
 
-        table_ph = st.empty()
-        status_ph = st.empty()
-        prog = st.progress(0, text="Starting…")
+            done = 0
+            cur = start_dt
+            while cur <= end_dt:
+                try:
+                    df_day = _cached_atoken(wallet, atoken_addr, cur.isoformat(), cur.isoformat(), INFURA_URL, int(token_decimals))
+                except Exception as e:
+                    prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
 
-        done = 0
-        cur = start_dt
-        while cur <= end_dt:
-            try:
-                df_day = _cached_ausdc(wallet, ausdc_addr, cur.isoformat(), cur.isoformat(), INFURA_URL)
-            except Exception as e:
-                prog.empty()
-                status_ph.error(f"Failed on {cur}: {e}")
-                return
+                if df_day is not None and not df_day.empty:
+                    acc = st.session_state["atoken_accum"]
+                    acc = pd.concat([acc, df_day], ignore_index=True)
+                    acc.drop_duplicates(subset=["date","start_block","end_block","token_address"], keep="last", inplace=True)
+                    acc.sort_values(["token_address","date"], inplace=True)
+                    acc.reset_index(drop=True, inplace=True)
+                    st.session_state["atoken_accum"] = acc
 
-            if df_day is not None and not df_day.empty:
-                acc = st.session_state["ausdc_accum"]
-                acc = pd.concat([acc, df_day], ignore_index=True)
-                acc.drop_duplicates(subset=["date","start_block","end_block"], keep="last", inplace=True)
-                acc.sort_values("date", inplace=True)
-                acc.reset_index(drop=True, inplace=True)
-                st.session_state["ausdc_accum"] = acc
+                    table_ph.dataframe(acc, use_container_width=True)
+                    status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
 
-                table_ph.dataframe(acc, use_container_width=True)
-                status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
+                done += 1
+                prog.progress(min(int(done / total_days * 100), 100), text=f"Processed {done}/{total_days} day(s)…")
+                cur = cur + timedelta(days=1)
 
-            done += 1
-            prog.progress(min(int(done / total_days * 100), 100),
-                          text=f"Processed {done}/{total_days} day(s)…")
-            cur = cur + timedelta(days=1)
+            prog.empty()
+            status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['atoken_accum'])}")
 
-        prog.empty()
-        status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['ausdc_accum'])}")
+        if run:
+            if not wallet or not INFURA_URL or not atoken_addr:
+                st.error("Enter wallet + INFURA_URL + aToken address.")
+            else:
+                run_window_and_stream_atoken(start_dt, end_dt)
 
-    if run:
-        if not wallet or not INFURA_URL or not ausdc_addr:
-            st.error("Enter wallet + aUSDC contract + INFURA_URL.")
+        # Output
+        accum = st.session_state["atoken_accum"]
+        st.markdown("### Accumulated results (Aave aTokens)")
+        if not accum.empty:
+            st.dataframe(accum, use_container_width=True)
+            st.download_button(
+                "Download accumulated CSV",
+                accum.to_csv(index=False),
+                file_name="aave_atokens_interest_accumulated.csv",
+                mime="text/csv",
+            )
         else:
-            run_window_and_stream_ausdc(start_dt, end_dt)
-
-    # Output
-    accum = st.session_state["ausdc_accum"]
-    st.markdown("### Accumulated results (aUSDC)")
-    if not accum.empty:
-        st.dataframe(accum, use_container_width=True)
-        st.download_button(
-            "Download accumulated CSV",
-            accum.to_csv(index=False),
-            file_name="ausdc_interest_accumulated.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("No results yet. Choose a date window and click **Compute this range**.")
-
+            st.info("No results yet. Choose a token, a date window, then run.")
 
 # ======================================================
 #                      SETTINGS
