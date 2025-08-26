@@ -219,18 +219,24 @@ with proto_tabs[0]:
 with proto_tabs[1]:
     st.header("Aave")
 
-    # ------- Presets (Aave v3 mainnet) -------
+    # ------- Presets (Aave v3 Ethereum mainnet) -------
     AAVE_V3_PRESETS = {
         "aUSDC v3 (6)":   {"address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c", "decimals": 6},
         "aDAI v3 (18)":   {"address": "0x018008bfb33d285247A21d44E50697654f754e63", "decimals": 18},
+        "aUSDT v3 (6)":   {"address": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a", "decimals": 6},
         "aWETH v3 (18)":  {"address": "0xE0bCe3f16E2a9e06d0Dda3aA6884A54792F5BcE0", "decimals": 18},
         "awstETH v3 (18)":{"address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371", "decimals": 18},
-        # Add more v3 aTokens here as needed
+        "aWBTC v3 (8)":   {"address": "0x078f358208685046a11C85e8ad32895DED33A249", "decimals": 8},
+        "aLINK v3 (18)":  {"address": "0x191c10Aa4AF7C30e871E70C95dB0E4eb77237530", "decimals": 18},
+        "aCRV v3 (18)":   {"address": "0x8Eb270e296023E9d92081fDF967ddd7878724424", "decimals": 18},
+        "aLUSD v3 (18)":  {"address": "0x8ffDf2DE812095b1D19CB146E4c004587C0A0692", "decimals": 18},
+        "aFRAX v3 (18)":  {"address": "0x0d3890F5dC5fFd3F2eB3C4350e6c8bD97d9eF80D", "decimals": 18},
+        "aUNI v3 (18)":   {"address": "0xB3C8e5534F007eD0e2eB5cc3A0b8242bdC036903", "decimals": 18},
+        "aENS v3 (18)":   {"address": "0x1c60D7F49CFFe8831c6C47C76C097cEA251fE627", "decimals": 18},
     }
 
     # ------- User's saved tokens (session-scoped) -------
     if "aave_my_tokens" not in st.session_state:
-        # Seed with presets initially (user can edit over time)
         st.session_state["aave_my_tokens"] = {k: v.copy() for k, v in AAVE_V3_PRESETS.items()}
 
     aave_tabs = st.tabs(["aToken Interest (v3)"])
@@ -246,7 +252,6 @@ with proto_tabs[1]:
                 st.session_state["aave_my_tokens"][preset_label] = AAVE_V3_PRESETS[preset_label]
                 st.success(f"Added {preset_label} to My tokens")
         with col2:
-            # Let user choose from their saved tokens
             my_labels = list(st.session_state["aave_my_tokens"].keys())
             active_label = st.selectbox("My tokens", my_labels, index=my_labels.index(preset_label) if preset_label in my_labels else 0)
 
@@ -254,10 +259,10 @@ with proto_tabs[1]:
         atoken_addr = st.text_input("aToken contract", value=active["address"])
         token_decimals = st.number_input("Token decimals", value=active["decimals"], min_value=0, max_value=36, step=1)
 
-        # Save any edits back to "My tokens"
+        # Save edits back to "My tokens"
         st.session_state["aave_my_tokens"][active_label] = {"address": atoken_addr, "decimals": int(token_decimals)}
 
-        # Session accumulators for results
+        # Session accumulators
         if "atoken_accum" not in st.session_state:
             st.session_state["atoken_accum"] = pd.DataFrame()
         if "atoken_first_activity" not in st.session_state:
@@ -278,7 +283,7 @@ with proto_tabs[1]:
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-        # Date window helpers
+        # Date range
         today = date.today()
         yday = today - timedelta(days=1)
         accum = st.session_state["atoken_accum"]
@@ -303,7 +308,7 @@ with proto_tabs[1]:
         with c2:
             end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
 
-        stream_rows_atoken = st.toggle("Stream rows live (update after each day)", value=True, key="atoken_stream")
+        stream_rows_atoken = st.toggle("Stream rows live", value=True, key="atoken_stream")
         st.caption("Interest = (end_balance − start_balance) − withdrawals + deposits. Deposits/withdrawals come from mint/burn events.")
 
         @st.cache_data(show_spinner=False, ttl=900)
