@@ -5,27 +5,28 @@ from datetime import date, timedelta, datetime
 
 from trackers.steth import (
     get_steth_rebases_range,
-    get_first_activity_date,   # UTC date helper
+    get_first_activity_date,   # UTC date helper (fast, no logs)
 )
 
 st.set_page_config(page_title="DeFi Center", layout="wide")
 st.title("💸 DeFi Center")
 
+# ---- Provider secrets/env (no network at import) ----
 INFURA_URL = st.secrets.get("INFURA_URL", os.getenv("INFURA_URL", "")).strip()
 if not INFURA_URL:
     st.warning("Set INFURA_URL in Streamlit Secrets or env. Example: https://mainnet.infura.io/v3/<KEY>")
 
 wallet = st.text_input("Enter your Ethereum wallet address:", help="0x… (checksum or lowercase is fine)")
 
-# Session accumulator
+# ---- Session state: accumulator + earliest activity date ----
 if "steth_accum" not in st.session_state:
     st.session_state["steth_accum"] = pd.DataFrame()
 if "steth_first_activity" not in st.session_state:
     st.session_state["steth_first_activity"] = None
 
+# ---- Controls / helpers ----
 st.markdown("### stETH rebases — run by date range (≤ 180 days per run)")
 
-# --- Locate first activity (fast, no logs) ---
 left, right = st.columns([1,3])
 with left:
     if st.button("Find first stETH activity"):
@@ -42,7 +43,6 @@ with left:
             except Exception as e:
                 st.error(f"Failed to locate first activity: {e}")
 
-# Defaults: from first activity (if known) or last 180d → yesterday
 today = date.today()
 yday = today - timedelta(days=1)
 accum = st.session_state["steth_accum"]
@@ -67,14 +67,15 @@ with c1:
 with c2:
     end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday)
 
-st.caption("Tip: Run multiple adjacent windows (≤ 180 days each). Results accumulate below and can be downloaded as one CSV.")
+stream_rows = st.toggle("Stream rows live (update UI after each day)", value=True)
+st.caption("Run multiple adjacent windows (≤ 180 days each). Results accumulate below and can be downloaded as one CSV.")
 
-# Cache per (wallet, start_iso, end_iso)
+# ---- Cache per (wallet, start_iso, end_iso) ----
 @st.cache_data(show_spinner=False, ttl=900)
 def _cached_range(wallet_addr: str, start_iso: str, end_iso: str, rpc_url: str) -> pd.DataFrame:
     return get_steth_rebases_range(wallet_addr, start_iso, end_iso, infura_url=rpc_url)
 
-# --- Actions ---
+# ---- Action buttons ----
 col_run, col_next, col_clear = st.columns([1,1,1])
 with col_run:
     run = st.button("Compute this range")
@@ -86,30 +87,60 @@ with col_clear:
         st.success("Cleared.")
         accum = st.session_state["steth_accum"]
 
-# If “Compute next window”, advance to the next suggested 180-day window automatically
+# Auto-advance to next 180-day window if requested
 if run_next:
-    # choose from day after last row (or first activity) for up to 180 days
     s = day_after_last_accum()
     e = min(s + timedelta(days=179), yday)
     start_dt, end_dt = s, e
-    run = True  # fall through to the same pipeline
+    run = True
 
-# --- Execute with live updates (slice into ~30-day chunks for UI feedback) ---
+# ---- Executor with live updates ----
 def run_window_and_stream(start_dt: date, end_dt: date):
-    """Fetch the window in ~30-day slices, updating the table as rows arrive."""
     total_days = (end_dt - start_dt).days + 1
     if total_days <= 0:
         st.info("Empty window.")
         return
-
     if total_days > 180:
         st.error(f"Window too large: {total_days} days. Please run ≤ 180 days per call.")
         return
 
-    placeholder = st.empty()
+    table_ph = st.empty()
+    status_ph = st.empty()
     prog = st.progress(0, text="Starting…")
 
-    # Choose slice size to balance speed/feedback
+    # Row-by-row streaming path (default)
+    if stream_rows:
+        done = 0
+        cur = start_dt
+        while cur <= end_dt:
+            try:
+                df_day = _cached_range(wallet, cur.isoformat(), cur.isoformat(), INFURA_URL)
+            except Exception as e:
+                prog.empty()
+                status_ph.error(f"Failed on {cur}: {e}")
+                return
+
+            if df_day is not None and not df_day.empty:
+                acc = st.session_state["steth_accum"]
+                acc = pd.concat([acc, df_day], ignore_index=True)
+                acc.drop_duplicates(subset=["date","start_block","end_block"], keep="last", inplace=True)
+                acc.sort_values("date", inplace=True)
+                acc.reset_index(drop=True, inplace=True)
+                st.session_state["steth_accum"] = acc
+
+                table_ph.dataframe(acc, use_container_width=True)
+                status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
+
+            done += 1
+            prog.progress(min(int(done / total_days * 100), 100),
+                          text=f"Processed {done}/{total_days} day(s)…")
+            cur = cur + timedelta(days=1)
+
+        prog.empty()
+        status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+        return
+
+    # Fallback: slice updates (fewer UI refreshes)
     SLICE_DAYS = 30
     done = 0
     cur_start = start_dt
@@ -119,7 +150,7 @@ def run_window_and_stream(start_dt: date, end_dt: date):
             df_slice = _cached_range(wallet, cur_start.isoformat(), cur_end.isoformat(), INFURA_URL)
         except Exception as e:
             prog.empty()
-            st.error(f"Failed on slice {cur_start} → {cur_end}: {e}")
+            status_ph.error(f"Failed on slice {cur_start} → {cur_end}: {e}")
             return
 
         if df_slice is not None and not df_slice.empty:
@@ -129,28 +160,24 @@ def run_window_and_stream(start_dt: date, end_dt: date):
             acc.sort_values("date", inplace=True)
             acc.reset_index(drop=True, inplace=True)
             st.session_state["steth_accum"] = acc
+            table_ph.dataframe(acc, use_container_width=True)
 
-            # Show the updated accumulator immediately
-            placeholder.dataframe(acc, use_container_width=True)
-
-        # update progress
         done += (cur_end - cur_start).days + 1
-        pct = min(int(done / total_days * 100), 100)
-        prog.progress(pct, text=f"Processed {done}/{total_days} day(s)…")
-
-        # next slice
+        prog.progress(min(int(done / total_days * 100), 100),
+                      text=f"Processed {done}/{total_days} day(s)…")
         cur_start = cur_end + timedelta(days=1)
 
     prog.empty()
-    st.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+    status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
 
+# ---- Run if requested ----
 if run:
     if not wallet or not INFURA_URL:
         st.error("Please enter a wallet and ensure INFURA_URL is set.")
     else:
         run_window_and_stream(start_dt, end_dt)
 
-# --- Output / download ---
+# ---- Output / download ----
 accum = st.session_state["steth_accum"]
 st.markdown("### Accumulated results")
 if not accum.empty:
