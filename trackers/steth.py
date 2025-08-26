@@ -2,34 +2,42 @@ import os
 import time
 import requests
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 STETH_CONTRACT = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
 TRANSFER_SIG   = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 WEI_PER_STETH  = 10**18
+STETH_GENESIS_UTC = datetime(2020, 12, 1, tzinfo=timezone.utc)  # search lower bound
 
-# Start around stETH launch to avoid scanning from genesis
-STETH_GENESIS_UTC = datetime(2020, 12, 1, tzinfo=timezone.utc)
+# ---------------- RPC helper (with 429 handling) ----------------
 
-# ---------------- RPC helpers (light retry/backoff) ----------------
-
-def _rpc(infura_url: str, method: str, params, tries: int = 3, timeout: float = 12.0):
+def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 12.0):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    backoff = 0.6
+    backoff = 0.7
     last_err = None
     for _ in range(tries):
         try:
             r = requests.post(infura_url, json=payload, timeout=timeout)
+            if r.status_code == 429:
+                ra = r.headers.get("Retry-After")
+                sleep_s = float(ra) if ra else backoff
+                time.sleep(sleep_s)
+                backoff = min(backoff * 1.8, 10.0)
+                continue
             r.raise_for_status()
             js = r.json()
             if "error" in js:
                 last_err = js["error"]
-                time.sleep(backoff); backoff = min(backoff * 1.8, 8.0)
+                time.sleep(backoff)
+                backoff = min(backoff * 1.8, 10.0)
                 continue
             return js["result"]
+        except requests.exceptions.HTTPError as e:
+            last_err = f"HTTP {getattr(e.response,'status_code',None)}"
+            time.sleep(backoff); backoff = min(backoff * 1.8, 10.0)
         except Exception as e:
             last_err = str(e)
-            time.sleep(backoff); backoff = min(backoff * 1.8, 8.0)
+            time.sleep(backoff); backoff = min(backoff * 1.8, 10.0)
     raise RuntimeError(f"RPC failed: {method} ({last_err})")
 
 def _latest_block(infura_url: str) -> int:
@@ -66,12 +74,13 @@ def _balance_of(infura_url: str, wallet: str, block_num: int) -> int:
     res = _rpc(infura_url, "eth_call", [{"to": STETH_CONTRACT, "data": selector}, hex(block_num)])
     return int(res, 16)
 
-# ---------------- Logs (chunked per day; friendly to free tier) ----------------
+# ---------------- Logs (chunked & gentle pacing) ----------------
 
 def _get_logs_chunked(infura_url: str, start_block: int, end_block: int, topics,
-                      stop_at_first: bool = False, chunk_size: int = 2500):
+                      stop_at_first: bool = False, chunk_size: int = 1000):
     out = []
     b = start_block
+    INTER_CHUNK_SLEEP = 0.35
     while b <= end_block:
         e = min(end_block, b + chunk_size - 1)
         params = [{
@@ -86,25 +95,19 @@ def _get_logs_chunked(infura_url: str, start_block: int, end_block: int, topics,
         if logs:
             out.extend(logs)
         b = e + 1
+        time.sleep(INTER_CHUNK_SLEEP)
     return out
 
-# ------------- Find earliest non-zero stETH balance (log-free, robust) -------------
+# ---------------- First activity helpers ----------------
 
 def _find_first_nonzero_balance_block(infura_url: str, wallet: str) -> int | None:
-    """
-    Find earliest block with balanceOf(wallet) > 0 by binary searching blocks.
-    Much lighter than log scans; works on Infura free.
-    """
     latest = _latest_block(infura_url)
     if latest == 0:
         return None
-
-    # lower bound = block at ~Dec 1, 2020 (stETH launch era)
     genesis_ts = int(STETH_GENESIS_UTC.timestamp())
     lo = _block_by_time(infura_url, genesis_ts, "after")
     if lo <= 0: lo = 1
     hi = latest
-
     ans = None
     while lo <= hi:
         mid = (lo + hi) // 2
@@ -116,47 +119,53 @@ def _find_first_nonzero_balance_block(infura_url: str, wallet: str) -> int | Non
             lo = mid + 1
     return ans
 
-# ------------- Sum transfers for a day (same math as your Apps Script) -------------
+def get_first_activity_date(wallet: str, infura_url: str) -> date | None:
+    """UTC date of the earliest non-zero stETH balance; None if never held."""
+    fb = _find_first_nonzero_balance_block(infura_url, wallet)
+    if fb is None:
+        return None
+    blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(fb), False])
+    ts = int(blk_obj["timestamp"], 16)
+    return datetime.fromtimestamp(ts, tz=timezone.utc).date()
+
+# ---------------- Daily math ----------------
 
 def _sum_transfers(infura_url: str, wallet: str, start_block: int, end_block: int):
     wtopic = "0x" + "0"*24 + wallet.lower()[2:]
-    TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
     in_logs  = _get_logs_chunked(infura_url, start_block, end_block, [TRANSFER_SIG, None, wtopic]) or []
     out_logs = _get_logs_chunked(infura_url, start_block, end_block, [TRANSFER_SIG, wtopic]) or []
-
-    in_wei  = 0
-    out_wei = 0
-    for l in in_logs:
-        in_wei  += int(l["data"], 16)
-    for l in out_logs:
-        out_wei += int(l["data"], 16)
+    in_wei  = sum(int(l["data"], 16) for l in in_logs)
+    out_wei = sum(int(l["data"], 16) for l in out_logs)
     return in_wei, out_wei
 
-# ------------- Public: full history from first activity (via first non-zero balance) -------------
+def _iterate_days(start_dt: date, end_dt: date):
+    cur = start_dt
+    one = timedelta(days=1)
+    while cur <= end_dt:
+        yield cur
+        cur = cur + one
 
-def get_steth_rebases_from_first_activity(wallet: str, infura_url: str | None = None) -> pd.DataFrame:
+# ---------------- Public API ----------------
+
+def get_steth_rebases_range(wallet: str, start_iso: str, end_iso: str, infura_url: str | None = None) -> pd.DataFrame:
+    """
+    Compute daily stETH rebases for [start_iso, end_iso] inclusive (UTC dates, 'YYYY-MM-DD').
+    """
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
         raise RuntimeError("Missing INFURA_URL")
 
-    first_block = _find_first_nonzero_balance_block(infura_url, wallet)
-    if first_block is None:
-        # No stETH ever held
+    start_dt = datetime.strptime(start_iso, "%Y-%m-%d").date()
+    end_dt   = datetime.strptime(end_iso,   "%Y-%m-%d").date()
+    if end_dt < start_dt:
         return pd.DataFrame([])
 
-    # Day 0 = UTC date of first non-zero balance
-    first_blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(first_block), False])
-    first_ts = int(first_blk_obj["timestamp"], 16)
-    start_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).date()
-    today = datetime.now(timezone.utc).date()
-
-    rows = []
     latest = _latest_block(infura_url)
     latest_ts = int(_rpc(infura_url, "eth_getBlockByNumber", [hex(latest), False])["timestamp"], 16)
 
-    d = start_date
-    while d <= today:
-        # UTC day window
+    rows = []
+    for d in _iterate_days(start_dt, end_dt):
+        # Day bounds (UTC)
         start_ts = int(datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc).timestamp())
         end_ts   = int(datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
         if start_ts > latest_ts:
@@ -171,8 +180,8 @@ def get_steth_rebases_from_first_activity(wallet: str, infura_url: str | None = 
 
         start_bal = _balance_of(infura_url, wallet, start_blk)
         end_bal   = _balance_of(infura_url, wallet, end_blk)
-
         in_wei, out_wei = _sum_transfers(infura_url, wallet, start_blk, end_blk)
+
         net_wei    = in_wei - out_wei
         rebase_wei = (end_bal - start_bal) - net_wei
 
@@ -187,7 +196,5 @@ def get_steth_rebases_from_first_activity(wallet: str, infura_url: str | None = 
             "net_transfers_steth": net_wei   / WEI_PER_STETH,
             "daily_rebase_reward_steth": rebase_wei / WEI_PER_STETH,
         })
-
-        d = d + timedelta(days=1)
 
     return pd.DataFrame(rows)
