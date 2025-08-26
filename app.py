@@ -7,6 +7,10 @@ from trackers.steth import (
     get_steth_rebases_range,
     get_first_activity_date,   # fast helper (binary search on balanceOf)
 )
+from trackers.ausdc import (
+    get_ausdc_interest_range,
+    get_first_activity_date_ausdc,
+)
 
 st.set_page_config(page_title="DeFi Center", layout="wide")
 st.title("💸 DeFi Center")
@@ -212,19 +216,145 @@ with proto_tabs[0]:
 # ======================================================
 #                        AAVE
 # ======================================================
-with proto_tabs[1]:
-    st.header("Aave")
-    aave_tabs = st.tabs(["aUSDC", "awstETH", "aWETH"])
+with aave_tabs[0]:
+    st.subheader("aUSDC Interest — run by date range (≤ 180 days per run)")
 
-    with aave_tabs[0]:
-        st.subheader("aUSDC Interest (placeholder)")
-        st.info("Coming soon. This tab will show daily interest accruals and balances for aUSDC.")
-    with aave_tabs[1]:
-        st.subheader("awstETH Interest (placeholder)")
-        st.info("Coming soon.")
-    with aave_tabs[2]:
-        st.subheader("aWETH Interest (placeholder)")
-        st.info("Coming soon.")
+    # Input: aUSDC contract (v2/v3 differ)
+    ausdc_addr = st.text_input(
+        "aUSDC contract address",
+        value="0xBcca60bB61934080951369a648Fb03DF4F96263C",  # mainnet v2
+        help="Default is Aave v2 aUSDC. Replace with v3 if needed.",
+    )
+
+    # Session state
+    if "ausdc_accum" not in st.session_state:
+        st.session_state["ausdc_accum"] = pd.DataFrame()
+    if "ausdc_first_activity" not in st.session_state:
+        st.session_state["ausdc_first_activity"] = None
+
+    # Find first activity button
+    if st.button("Find first aUSDC activity"):
+        if not wallet or not INFURA_URL or not ausdc_addr:
+            st.error("Enter wallet + aUSDC address + INFURA_URL.")
+        else:
+            try:
+                fa = get_first_activity_date_ausdc(wallet, ausdc_addr, INFURA_URL)
+                st.session_state["ausdc_first_activity"] = fa
+                if fa is None:
+                    st.info("No aUSDC activity found for this wallet.")
+                else:
+                    st.success(f"First aUSDC activity (UTC): {fa.isoformat()}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    today = date.today()
+    yday = today - timedelta(days=1)
+    accum = st.session_state["ausdc_accum"]
+    first_activity = st.session_state["ausdc_first_activity"]
+
+    def day_after_last_accum_ausdc():
+        if accum.empty:
+            return first_activity or (yday - timedelta(days=179))
+        last_iso = str(accum["date"].max())
+        try:
+            last_d = datetime.strptime(last_iso, "%Y-%m-%d").date()
+        except Exception:
+            last_d = yday - timedelta(days=179)
+        return min(last_d + timedelta(days=1), yday)
+
+    suggested_start = day_after_last_accum_ausdc()
+    suggested_end   = min(suggested_start + timedelta(days=179), yday)
+
+    r1, r2 = st.columns(2)
+    with r1:
+        start_dt = st.date_input("Start date (UTC)", value=suggested_start, max_value=yday, key="ausdc_start")
+    with r2:
+        end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="ausdc_end")
+
+    @st.cache_data(show_spinner=False, ttl=900)
+    def _cached_ausdc(wallet_addr: str, token: str, start_iso: str, end_iso: str, rpc_url: str) -> pd.DataFrame:
+        return get_ausdc_interest_range(wallet_addr, token, start_iso, end_iso, infura_url=rpc_url)
+
+    # Actions
+    a1, a2, a3 = st.columns([1, 1, 1])
+    with a1:
+        run = st.button("Compute this range", key="run_ausdc_range")
+    with a2:
+        run_next = st.button("Compute next window", key="run_ausdc_next")
+    with a3:
+        if st.button("Clear accumulated results", key="clear_ausdc_accum"):
+            st.session_state["ausdc_accum"] = pd.DataFrame()
+            st.success("Cleared.")
+            accum = st.session_state["ausdc_accum"]
+
+    if run_next:
+        s = day_after_last_accum_ausdc()
+        e = min(s + timedelta(days=179), yday)
+        start_dt, end_dt = s, e
+        run = True
+
+    def run_window_and_stream_ausdc(start_dt: date, end_dt: date):
+        total_days = (end_dt - start_dt).days + 1
+        if total_days <= 0:
+            st.info("Empty window.")
+            return
+        if total_days > 180:
+            st.error(f"Window too large: {total_days} days. Please run ≤ 180 days per call.")
+            return
+
+        table_ph = st.empty()
+        status_ph = st.empty()
+        prog = st.progress(0, text="Starting…")
+
+        done = 0
+        cur = start_dt
+        while cur <= end_dt:
+            try:
+                df_day = _cached_ausdc(wallet, ausdc_addr, cur.isoformat(), cur.isoformat(), INFURA_URL)
+            except Exception as e:
+                prog.empty()
+                status_ph.error(f"Failed on {cur}: {e}")
+                return
+
+            if df_day is not None and not df_day.empty:
+                acc = st.session_state["ausdc_accum"]
+                acc = pd.concat([acc, df_day], ignore_index=True)
+                acc.drop_duplicates(subset=["date","start_block","end_block"], keep="last", inplace=True)
+                acc.sort_values("date", inplace=True)
+                acc.reset_index(drop=True, inplace=True)
+                st.session_state["ausdc_accum"] = acc
+
+                table_ph.dataframe(acc, use_container_width=True)
+                status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
+
+            done += 1
+            prog.progress(min(int(done / total_days * 100), 100),
+                          text=f"Processed {done}/{total_days} day(s)…")
+            cur = cur + timedelta(days=1)
+
+        prog.empty()
+        status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['ausdc_accum'])}")
+
+    if run:
+        if not wallet or not INFURA_URL or not ausdc_addr:
+            st.error("Enter wallet + aUSDC contract + INFURA_URL.")
+        else:
+            run_window_and_stream_ausdc(start_dt, end_dt)
+
+    # Output
+    accum = st.session_state["ausdc_accum"]
+    st.markdown("### Accumulated results (aUSDC)")
+    if not accum.empty:
+        st.dataframe(accum, use_container_width=True)
+        st.download_button(
+            "Download accumulated CSV",
+            accum.to_csv(index=False),
+            file_name="ausdc_interest_accumulated.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No results yet. Choose a date window and click **Compute this range**.")
+
 
 # ======================================================
 #                      SETTINGS
