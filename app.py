@@ -221,20 +221,80 @@ with proto_tabs[1]:
     st.header("Aave")
 
     # ------- Presets (Aave v3 Ethereum mainnet) -------
-    AAVE_V3_PRESETS = {
-        "aUSDC v3 (6)":   {"address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c", "decimals": 6},
-        "aDAI v3 (18)":   {"address": "0x018008bfb33d285247A21d44E50697654f754e63", "decimals": 18},
-        "aUSDT v3 (6)":   {"address": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a", "decimals": 6},
-        "aWETH v3 (18)":  {"address": "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8", "decimals": 18},
-        "awstETH v3 (18)":{"address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371", "decimals": 18},
-        "aWBTC v3 (8)":   {"address": "0x078f358208685046a11C85e8ad32895DED33A249", "decimals": 8},
-        "aLINK v3 (18)":  {"address": "0x191c10Aa4AF7C30e871E70C95dB0E4eb77237530", "decimals": 18},
-        "aCRV v3 (18)":   {"address": "0x8Eb270e296023E9d92081fDF967ddd7878724424", "decimals": 18},
-        "aLUSD v3 (18)":  {"address": "0x8ffDf2DE812095b1D19CB146E4c004587C0A0692", "decimals": 18},
-        "aFRAX v3 (18)":  {"address": "0x0d3890F5dC5fFd3F2eB3C4350e6c8bD97d9eF80D", "decimals": 18},
-        "aUNI v3 (18)":   {"address": "0xB3C8e5534F007eD0e2eB5cc3A0b8242bdC036903", "decimals": 18},
-        "aENS v3 (18)":   {"address": "0x1c60D7F49CFFe8831c6C47C76C097cEA251fE627", "decimals": 18},
-    }
+AAVE_V3_PRESETS = {
+    "aUSDC v3 (6)":   {
+        "address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c",
+        "decimals": 6,
+        "underlying": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
+        "underlying_decimals": 6,
+    },
+    "aDAI v3 (18)":   {
+        "address": "0x018008bfb33d285247A21d44E50697654f754e63",
+        "decimals": 18,
+        "underlying": "0x6B175474E89094C44Da98b954EedeAC495271d0F",  # DAI
+        "underlying_decimals": 18,
+    },
+    "aUSDT v3 (6)":   {
+        "address": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a",
+        "decimals": 6,
+        "underlying": "0xdAC17F958D2ee523a2206206994597C13D831ec7",  # USDT
+        "underlying_decimals": 6,
+    },
+    "aWETH v3 (18)":  {
+        "address": "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8",
+        "decimals": 18,
+        "underlying": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
+        "underlying_decimals": 18,
+    },
+    "awstETH v3 (18)":{
+        "address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371",
+        "decimals": 18,
+        "underlying": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",  # wstETH
+        "underlying_decimals": 18,
+    },
+    "aWBTC v3 (8)":   {
+        "address": "0x078f358208685046a11C85e8ad32895DED33A249",
+        "decimals": 8,
+        "underlying": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",  # WBTC
+        "underlying_decimals": 8,
+    },
+    "aLINK v3 (18)":  {
+        "address": "0x191c10Aa4AF7C30e871E70C95dB0E4eb77237530",
+        "decimals": 18,
+        "underlying": "0x514910771AF9Ca656af840dff83E8264EcF986CA",  # LINK
+        "underlying_decimals": 18,
+    },
+    "aCRV v3 (18)":   {
+        "address": "0x8Eb270e296023E9d92081fDF967ddd7878724424",
+        "decimals": 18,
+        "underlying": "0xD533a949740bb3306d119CC777fa900bA034cd52",  # CRV
+        "underlying_decimals": 18,
+    },
+    "aLUSD v3 (18)":  {
+        "address": "0x8ffDf2DE812095b1D19CB146E4c004587C0A0692",
+        "decimals": 18,
+        "underlying": "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0",  # LUSD
+        "underlying_decimals": 18,
+    },
+    "aFRAX v3 (18)":  {
+        "address": "0x0d3890F5dC5fFd3F2eB3C4350e6c8bD97d9eF80D",
+        "decimals": 18,
+        "underlying": "0x853d955aCEf822Db058eb8505911ED77F175b99e",  # FRAX
+        "underlying_decimals": 18,
+    },
+    "aUNI v3 (18)":   {
+        "address": "0xB3C8e5534F007eD0e2eB5cc3A0b8242bdC036903",
+        "decimals": 18,
+        "underlying": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",  # UNI
+        "underlying_decimals": 18,
+    },
+    "aENS v3 (18)":   {
+        "address": "0x1c60D7F49CFFe8831c6C47C76C097cEA251fE627",
+        "decimals": 18,
+        "underlying": "0xC18360217D8F7Ab5E7c516566761Ea12Ce7F9D72",  # ENS
+        "underlying_decimals": 18,
+    },
+}
 
     # ------- User's saved tokens (session-scoped) -------
     if "aave_my_tokens" not in st.session_state:
@@ -348,27 +408,49 @@ with proto_tabs[1]:
 
             done = 0
             cur = start_dt
-            while cur <= end_dt:
-                try:
-                    df_day = _cached_atoken(wallet, atoken_addr, cur.isoformat(), cur.isoformat(), INFURA_URL, int(token_decimals))
-                except Exception as e:
-                    prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
+while cur <= end_dt:
+    try:
+        df_day = _cached_atoken(wallet, atoken_addr, cur.isoformat(), cur.isoformat(), INFURA_URL, int(token_decimals))
+    except Exception as e:
+        prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
 
-                if df_day is not None and not df_day.empty:
-                    df_day["token_address"] = atoken_addr
-                    acc = st.session_state["atoken_accum"]
-                    acc = pd.concat([acc, df_day], ignore_index=True)
-                    acc.drop_duplicates(subset=["date","start_block","end_block","token_address"], keep="last", inplace=True)
-                    acc.sort_values(["token_address","date"], inplace=True)
-                    acc.reset_index(drop=True, inplace=True)
-                    st.session_state["atoken_accum"] = acc
+    if df_day is not None and not df_day.empty:
+        df_day["token_address"] = atoken_addr
+        acc = st.session_state["atoken_accum"]
+        acc = pd.concat([acc, df_day], ignore_index=True)
 
-                    table_ph.dataframe(acc, use_container_width=True)
-                    status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
+        # --- NEW: also pull underlying flows ---
+        underlying_addr = active.get("underlying")
+        underlying_decimals = active.get("underlying_decimals", int(token_decimals))
+        if underlying_addr:
+            try:
+                df_flows = get_underlying_flows_range(
+                    wallet,
+                    underlying_addr,
+                    cur.isoformat(),
+                    cur.isoformat(),
+                    INFURA_URL,
+                    decimals=int(underlying_decimals),
+                    include_default_aave_eth_v3=True,
+                )
+                if not df_flows.empty:
+                    df_flows["token_address"] = underlying_addr
+                    acc = pd.concat([acc, df_flows], ignore_index=True)
+            except Exception as e:
+                status_ph.warning(f"Flow fetch failed on {cur}: {e}")
 
-                done += 1
-                prog.progress(min(int(done / total_days * 100), 100), text=f"Processed {done}/{total_days} day(s)…")
-                cur = cur + timedelta(days=1)
+        acc.drop_duplicates(subset=["date","start_block","end_block","token_address"], keep="last", inplace=True)
+        acc.sort_values(["token_address","date"], inplace=True)
+        acc.reset_index(drop=True, inplace=True)
+        st.session_state["atoken_accum"] = acc
+
+        table_ph.dataframe(acc, use_container_width=True)
+        status_ph.info(f"Fetched {cur} ({len(df_day)} row + flows)")
+
+    done += 1
+    prog.progress(min(int(done / total_days * 100), 100), text=f"Processed {done}/{total_days} day(s)…")
+    cur = cur + timedelta(days=1)
+
 
             prog.empty()
             status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['atoken_accum'])}")
