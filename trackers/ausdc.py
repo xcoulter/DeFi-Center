@@ -5,17 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone, date
 from typing import Optional, Tuple
 
-# aUSDC (Aave aToken) is NON-rebasing. balanceOf returns the underlying-equivalent amount (accrues via index)
-# We do:
-#   interest = (end_balance - start_balance) - withdrawals + deposits
-#
-# NOTE: Do NOT hardcode the contract here; pass it from the UI because aUSDC address differs by Aave version:
-#   - Aave v2 (mainnet): 0xBcca60bB61934080951369a648Fb03DF4F96263C
-#   - Aave v3 (mainnet): (different address)
-# Let the user choose which aUSDC contract to use.
-
-DECIMALS = 6
-UNIT = 10 ** DECIMALS
+# This module is token-agnostic (works for any Aave aToken: aUSDC, aWETH, etc.)
 TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO_ADDR_TOPIC = "0x" + "0" * 64  # 32-byte topic for address(0)
 
@@ -38,8 +28,7 @@ def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 
             js = r.json()
             if "error" in js:
                 last_err = js["error"]
-                time.sleep(backoff)
-                backoff = min(backoff * 1.8, 10.0)
+                time.sleep(backoff); backoff = min(backoff * 1.8, 10.0)
                 continue
             return js["result"]
         except requests.exceptions.HTTPError as e:
@@ -79,15 +68,22 @@ def _block_by_time(infura_url: str, ts: int, mode: str = "before") -> int:
     return 0 if best is None else best
 
 def _balance_of(infura_url: str, token: str, wallet: str, block_num: int) -> int:
-    # balanceOf(address) selector 0x70a08231 + 12-byte pad + address
+    # balanceOf(address) selector 0x70a08231 + 12-byte pad + address (lowercased)
     selector = "0x70a08231" + "0"*24 + wallet.lower()[2:]
     res = _rpc(infura_url, "eth_call", [{"to": token, "data": selector}, hex(block_num)])
     return int(res, 16)
 
 # ---------------- Logs (chunked & gentle pacing) ----------------
 
-def _get_logs_chunked(infura_url: str, token: str, start_block: int, end_block: int, topics,
-                      stop_at_first: bool = False, chunk_size: int = 1000):
+def _get_logs_chunked(
+    infura_url: str,
+    token: str,
+    start_block: int,
+    end_block: int,
+    topics,
+    stop_at_first: bool = False,
+    chunk_size: int = 1000
+):
     out = []
     b = start_block
     INTER_CHUNK_SLEEP = 0.35
@@ -114,7 +110,7 @@ def _find_first_nonzero_balance_block(infura_url: str, token: str, wallet: str) 
     latest = _latest_block(infura_url)
     if latest == 0:
         return None
-    # Search from ~Aave v2 launch era; safe to just start from 2020
+    # Start around 2020 (covers Aave v2+ launch era on Ethereum)
     genesis_ts = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp())
     lo = _block_by_time(infura_url, genesis_ts, "after")
     if lo <= 0: lo = 1
@@ -130,8 +126,8 @@ def _find_first_nonzero_balance_block(infura_url: str, token: str, wallet: str) 
             lo = mid + 1
     return ans
 
-def get_first_activity_date_ausdc(wallet: str, token: str, infura_url: Optional[str] = None) -> Optional[date]:
-    """UTC date of earliest non-zero aUSDC balance; None if never held."""
+def get_first_activity_date_atoken(wallet: str, token: str, infura_url: Optional[str] = None) -> Optional[date]:
+    """UTC date of earliest non-zero aToken balance; None if never held."""
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
         raise RuntimeError("Missing INFURA_URL")
@@ -141,10 +137,6 @@ def get_first_activity_date_ausdc(wallet: str, token: str, infura_url: Optional[
     blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(fb), False])
     ts = int(blk_obj["timestamp"], 16)
     return datetime.fromtimestamp(ts, tz=timezone.utc).date()
-    
-def get_first_activity_date_atoken(wallet: str, token: str, infura_url: Optional[str] = None):
-    # generic wrapper so app.py’s call works for any aToken (aUSDC, aWETH, etc.)
-    return get_first_activity_date_ausdc(wallet, token, infura_url)
 
 # ---------------- Daily math (deposits/withdrawals only) ----------------
 
@@ -176,24 +168,27 @@ def _iterate_days(start_dt: date, end_dt: date):
         yield cur
         cur = cur + one
 
-# ---------------- Public API ----------------
+# ---------------- Public API (generic) ----------------
 
-def get_ausdc_interest_range(
+def get_atoken_interest_range(
     wallet: str,
-    ausdc_token: str,
+    token: str,
     start_iso: str,
     end_iso: str,
-    infura_url: Optional[str] = None
+    infura_url: Optional[str] = None,
+    decimals: int = 18,
 ) -> pd.DataFrame:
     """
-    Compute daily aUSDC interest for [start_iso, end_iso] inclusive (UTC).
-    Columns:
-      date, start_block, end_block, start_balance_ausdc, end_balance_ausdc,
-      deposits_usdc, withdrawals_usdc, net_transfers_usdc, daily_interest_usdc
+    Generic aToken daily interest calculator (aUSDC, aWETH, etc.) for [start_iso, end_iso] inclusive (UTC).
+    balanceOf returns underlying-equivalent amount (accrues via index).
+    interest = (end_balance - start_balance) - withdrawals + deposits
+    Returns neutral (token-agnostic) column names.
     """
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
         raise RuntimeError("Missing INFURA_URL")
+
+    UNIT = 10 ** int(decimals)
 
     start_dt = datetime.strptime(start_iso, "%Y-%m-%d").date()
     end_dt   = datetime.strptime(end_iso,   "%Y-%m-%d").date()
@@ -218,13 +213,12 @@ def get_ausdc_interest_range(
         if end_blk < start_blk:
             end_blk = start_blk
 
-        start_bal = _balance_of(infura_url, ausdc_token, wallet, start_blk)
-        end_bal   = _balance_of(infura_url, ausdc_token, wallet, end_blk)
+        start_bal = _balance_of(infura_url, token, wallet, start_blk)
+        end_bal   = _balance_of(infura_url, token, wallet, end_blk)
 
         deposits_wei, withdrawals_wei = _deposits_withdrawals_for_day(
-            infura_url, ausdc_token, wallet, start_blk, end_blk
+            infura_url, token, wallet, start_blk, end_blk
         )
-        net_transfers_wei = withdrawals_wei - deposits_wei  # positive reduces position
 
         # interest = Δbalance − withdrawals + deposits
         interest_wei = (end_bal - start_bal) - withdrawals_wei + deposits_wei
@@ -233,12 +227,12 @@ def get_ausdc_interest_range(
             "date": d.isoformat(),
             "start_block": start_blk,
             "end_block": end_blk,
-            "start_balance_ausdc": start_bal / UNIT,
-            "end_balance_ausdc":   end_bal   / UNIT,
-            "deposits_usdc":       deposits_wei / UNIT,
-            "withdrawals_usdc":    withdrawals_wei / UNIT,
-            "net_transfers_usdc":  net_transfers_wei / UNIT,
-            "daily_interest_usdc": interest_wei / UNIT,
+            "start_balance":      start_bal / UNIT,
+            "end_balance":        end_bal   / UNIT,
+            "deposits":           deposits_wei    / UNIT,
+            "withdrawals":        withdrawals_wei / UNIT,
+            "net_transfers":      (withdrawals_wei - deposits_wei) / UNIT,  # positive reduces position
+            "daily_interest":     interest_wei / UNIT,
         })
 
     return pd.DataFrame(rows)
