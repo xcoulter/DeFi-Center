@@ -278,48 +278,43 @@ def get_atoken_interest_range(
         start_bal_raw = _balance_of(infura_url, token, wallet, start_blk)
         end_bal_raw   = _balance_of(infura_url, token, wallet, end_blk)
 
-        # Deposits/withdrawals from UNDERLYING flows if provided; else fallback to aToken mint/burn
-        if underlying_token:
-            # Get flows in underlying decimals
-            to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
-                infura_url, underlying_token, wallet, start_blk, end_blk, cp
-            )
-            # Convert flows to aToken unit scale if decimals differ
-            if U_DEC == BAL_DEC:
-                deposits_raw = to_cp_u
-                withdrawals_raw = from_cp_u
-            elif U_DEC > BAL_DEC:
-                # scale down underlying to balance units (integer)
-                scale = 10 ** (U_DEC - BAL_DEC)
-                deposits_raw = to_cp_u // scale
-                withdrawals_raw = from_cp_u // scale
-            else:
-                # scale up underlying to balance units
-                scale = 10 ** (BAL_DEC - U_DEC)
-                deposits_raw = to_cp_u * scale
-                withdrawals_raw = from_cp_u * scale
-        else:
-            # Backward-compat fallback: infer from aToken mint/burn (less exact)
-            deposits_raw, withdrawals_raw = _deposits_withdrawals_by_mint_burn(
-                infura_url, token, wallet, start_blk, end_blk
-            )
+        # --- Deposits/withdrawals: ALWAYS from UNDERLYING flows ---
+if not underlying_token:
+    raise RuntimeError("underlying_token is required to compute deposits/withdrawals in underlying units")
 
-        net_transfers_raw = withdrawals_raw - deposits_raw  # + reduces position
-        interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
+# Get flows in underlying decimals
+to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
+    infura_url, underlying_token, wallet, start_blk, end_blk, cp
+)
 
-        rows.append({
-            "date": d.isoformat(),
-            "start_block": start_blk,
-            "end_block": end_blk,
-            "start_balance":   start_bal_raw / UNIT_BAL,
-            "end_balance":     end_bal_raw   / UNIT_BAL,
-            "deposits":        deposits_raw  / UNIT_BAL,
-            "withdrawals":     withdrawals_raw / UNIT_BAL,
-            "net_transfers":   net_transfers_raw / UNIT_BAL,
-            "daily_interest":  interest_raw / UNIT_BAL,
-        })
+# Convert flows into balance units if decimals differ
+if U_DEC == BAL_DEC:
+    deposits_raw = to_cp_u
+    withdrawals_raw = from_cp_u
+elif U_DEC > BAL_DEC:
+    scale = 10 ** (U_DEC - BAL_DEC)   # scale down
+    deposits_raw = to_cp_u // scale
+    withdrawals_raw = from_cp_u // scale
+else:
+    scale = 10 ** (BAL_DEC - U_DEC)   # scale up
+    deposits_raw = to_cp_u * scale
+    withdrawals_raw = from_cp_u * scale
 
-    return pd.DataFrame(rows)
+net_transfers_raw = withdrawals_raw - deposits_raw  # + reduces position
+interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
+
+rows.append({
+    "date": d.isoformat(),
+    "start_block": start_blk,
+    "end_block": end_blk,
+    "start_balance":   start_bal_raw / UNIT_BAL,
+    "end_balance":     end_bal_raw   / UNIT_BAL,
+    "deposits":        deposits_raw  / UNIT_BAL,
+    "withdrawals":     withdrawals_raw / UNIT_BAL,
+    "net_transfers":   net_transfers_raw / UNIT_BAL,
+    "daily_interest":  interest_raw / UNIT_BAL,
+})
+
 
 # ─────── Separate helper: raw underlying flows per day (display/debug) ───────
 def get_underlying_flows_range(
