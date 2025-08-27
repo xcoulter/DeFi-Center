@@ -5,15 +5,14 @@ from datetime import date, timedelta, datetime
 
 from trackers.steth import (
     get_steth_rebases_range,
-    get_first_activity_date,   # fast helper (binary search on balanceOf)
+    get_first_activity_date,   # stETH fast helper
 )
 from trackers.ausdc import (
     get_atoken_interest_range,
     get_first_activity_date_atoken,
-    # get_underlying_flows_range,  # optional: only if you want a separate flows table
 )
 
-st.set_page_config(page_title="💸 DeFi Center", layout="wide")
+st.set_page_config(page_title="DeFi Center", layout="wide")
 st.title("💸 DeFi Center")
 
 # ---- Provider secret/env (no network at import) ----
@@ -42,13 +41,10 @@ proto_tabs = st.tabs(["Lido", "Aave", "Settings"])
 with proto_tabs[0]:
     st.header("Lido")
 
-    # Sub-tabs inside Lido
     lido_tabs = st.tabs(["stETH Rebasing Rewards"])
-
     with lido_tabs[0]:
         st.subheader("stETH Rebasing Rewards — run by date range (≤ 180 days per run)")
 
-        # Controls row
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
             stream_rows = st.toggle("Stream rows live", value=True, help="Update UI after each day finishes")
@@ -93,12 +89,10 @@ with proto_tabs[0]:
         with r2:
             end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="steth_end")
 
-        # Cache per (wallet, start_iso, end_iso)
         @st.cache_data(show_spinner=False, ttl=900)
         def _cached_range(wallet_addr: str, start_iso: str, end_iso: str, rpc_url: str) -> pd.DataFrame:
             return get_steth_rebases_range(wallet_addr, start_iso, end_iso, infura_url=rpc_url)
 
-        # Actions
         a1, a2, a3 = st.columns([1, 1, 1])
         with a1:
             run = st.button("Compute this range", key="run_range")
@@ -110,38 +104,28 @@ with proto_tabs[0]:
                 st.success("Cleared.")
                 accum = st.session_state["steth_accum"]
 
-        # Auto-advance to next window
         if run_next:
             s = day_after_last_accum()
             e = min(s + timedelta(days=179), yday)
             start_dt, end_dt = s, e
             run = True
 
-        # Executor with live updates
         def run_window_and_stream(start_dt: date, end_dt: date):
             total_days = (end_dt - start_dt).days + 1
-            if total_days <= 0:
-                st.info("Empty window.")
-                return
-            if total_days > 180:
-                st.error(f"Window too large: {total_days} days. Please run ≤ 180 days per call.")
-                return
+            if total_days <= 0: st.info("Empty window."); return
+            if total_days > 180: st.error(f"Window too large: {total_days} days. Please run ≤ 180 days per call."); return
 
             table_ph = st.empty()
             status_ph = st.empty()
             prog = st.progress(0, text="Starting…")
 
             if stream_rows:
-                # Day-by-day streaming
-                done = 0
-                cur = start_dt
+                done = 0; cur = start_dt
                 while cur <= end_dt:
                     try:
                         df_day = _cached_range(wallet, cur.isoformat(), cur.isoformat(), INFURA_URL)
                     except Exception as e:
-                        prog.empty()
-                        status_ph.error(f"Failed on {cur}: {e}")
-                        return
+                        prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
 
                     if df_day is not None and not df_day.empty:
                         acc = st.session_state["steth_accum"]
@@ -163,7 +147,7 @@ with proto_tabs[0]:
                 status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
                 return
 
-            # Slice updates (fewer UI refreshes)
+            # slice mode
             SLICE_DAYS = 30
             done = 0
             cur_start = start_dt
@@ -172,9 +156,7 @@ with proto_tabs[0]:
                 try:
                     df_slice = _cached_range(wallet, cur_start.isoformat(), cur_end.isoformat(), INFURA_URL)
                 except Exception as e:
-                    prog.empty()
-                    status_ph.error(f"Failed on slice {cur_start} → {cur_end}: {e}")
-                    return
+                    prog.empty(); status_ph.error(f"Failed on slice {cur_start} → {cur_end}: {e}"); return
 
                 if df_slice is not None and not df_slice.empty:
                     acc = st.session_state["steth_accum"]
@@ -193,14 +175,12 @@ with proto_tabs[0]:
             prog.empty()
             status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
 
-        # Run if requested
         if run:
             if not wallet or not INFURA_URL:
                 st.error("Please enter a wallet and ensure INFURA_URL is set.")
             else:
                 run_window_and_stream(start_dt, end_dt)
 
-        # Output / download
         accum = st.session_state["steth_accum"]
         st.markdown("### Accumulated results")
         if not accum.empty:
@@ -212,7 +192,7 @@ with proto_tabs[0]:
                 mime="text/csv",
             )
         else:
-            st.info("No results yet. Choose a date window and click **Compute this range** (or **Compute next window**).")
+            st.info("No results yet. Choose a date window and click **Compute this range**.")
 
 # ======================================================
 #                        AAVE
@@ -220,90 +200,42 @@ with proto_tabs[0]:
 with proto_tabs[1]:
     st.header("Aave")
 
-    # ------- Presets (Aave v3 Ethereum mainnet) -------
+    # v3 (Ethereum mainnet) presets with underlying info
     AAVE_V3_PRESETS = {
-        "aUSDC v3 (6)":   {
-            "address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c",
-            "decimals": 6,
-            "underlying": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
-            "underlying_decimals": 6,
-        },
-        "aDAI v3 (18)":   {
-            "address": "0x018008bfb33d285247A21d44E50697654f754e63",
-            "decimals": 18,
-            "underlying": "0x6B175474E89094C44Da98b954EedeAC495271d0F",  # DAI
-            "underlying_decimals": 18,
-        },
-        "aUSDT v3 (6)":   {
-            "address": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a",
-            "decimals": 6,
-            "underlying": "0xdAC17F958D2ee523a2206206994597C13D831ec7",  # USDT
-            "underlying_decimals": 6,
-        },
-        "aWETH v3 (18)":  {
-            "address": "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8",
-            "decimals": 18,
-            "underlying": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
-            "underlying_decimals": 18,
-        },
-        "awstETH v3 (18)":{
-            "address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371",
-            "decimals": 18,
-            "underlying": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",  # wstETH
-            "underlying_decimals": 18,
-        },
-        "aWBTC v3 (8)":   {
-            "address": "0x078f358208685046a11C85e8ad32895DED33A249",
-            "decimals": 8,
-            "underlying": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",  # WBTC
-            "underlying_decimals": 8,
-        },
-        "aLINK v3 (18)":  {
-            "address": "0x191c10Aa4AF7C30e871E70C95dB0E4eb77237530",
-            "decimals": 18,
-            "underlying": "0x514910771AF9Ca656af840dff83E8264EcF986CA",  # LINK
-            "underlying_decimals": 18,
-        },
-        "aCRV v3 (18)":   {
-            "address": "0x8Eb270e296023E9d92081fDF967ddd7878724424",
-            "decimals": 18,
-            "underlying": "0xD533a949740bb3306d119CC777fa900bA034cd52",  # CRV
-            "underlying_decimals": 18,
-        },
-        "aLUSD v3 (18)":  {
-            "address": "0x8ffDf2DE812095b1D19CB146E4c004587C0A0692",
-            "decimals": 18,
-            "underlying": "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0",  # LUSD
-            "underlying_decimals": 18,
-        },
-        "aFRAX v3 (18)":  {
-            "address": "0x0d3890F5dC5fFd3F2eB3C4350e6c8bD97d9eF80D",
-            "decimals": 18,
-            "underlying": "0x853d955aCEf822Db058eb8505911ED77F175b99e",  # FRAX
-            "underlying_decimals": 18,
-        },
-        "aUNI v3 (18)":   {
-            "address": "0xB3C8e5534F007eD0e2eB5cc3A0b8242bdC036903",
-            "decimals": 18,
-            "underlying": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",  # UNI
-            "underlying_decimals": 18,
-        },
-        "aENS v3 (18)":   {
-            "address": "0x1c60D7F49CFFe8831c6C47C76C097cEA251fE627",
-            "decimals": 18,
-            "underlying": "0xC18360217D8F7Ab5E7c516566761Ea12Ce7F9D72",  # ENS
-            "underlying_decimals": 18,
-        },
+        "aUSDC v3 (6)":   {"address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c", "decimals": 6,
+                           "underlying": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "underlying_decimals": 6},
+        "aDAI v3 (18)":   {"address": "0x018008bfb33d285247A21d44E50697654f754e63", "decimals": 18,
+                           "underlying": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "underlying_decimals": 18},
+        "aUSDT v3 (6)":   {"address": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a", "decimals": 6,
+                           "underlying": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "underlying_decimals": 6},
+        "aWETH v3 (18)":  {"address": "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8", "decimals": 18,
+                           "underlying": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "underlying_decimals": 18},
+        "awstETH v3 (18)":{"address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371", "decimals": 18,
+                           "underlying": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84", "underlying_decimals": 18},
+        "aWBTC v3 (8)":   {"address": "0x078f358208685046a11C85e8ad32895DED33A249", "decimals": 8,
+                           "underlying": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", "underlying_decimals": 8},
+        "aLINK v3 (18)":  {"address": "0x191c10Aa4AF7C30e871E70C95dB0E4eb77237530", "decimals": 18,
+                           "underlying": "0x514910771AF9Ca656af840dff83E8264EcF986CA", "underlying_decimals": 18},
+        "aCRV v3 (18)":   {"address": "0x8Eb270e296023E9d92081fDF967ddd7878724424", "decimals": 18,
+                           "underlying": "0xD533a949740bb3306d119CC777fa900bA034cd52", "underlying_decimals": 18},
+        "aLUSD v3 (18)":  {"address": "0x8ffDf2DE812095b1D19CB146E4c004587C0A0692", "decimals": 18,
+                           "underlying": "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0", "underlying_decimals": 18},
+        "aFRAX v3 (18)":  {"address": "0x0d3890F5dC5fFd3F2eB3C4350e6c8bD97d9eF80D", "decimals": 18,
+                           "underlying": "0x853d955aCEf822Db058eb8505911ED77F175b99e", "underlying_decimals": 18},
+        "aUNI v3 (18)":   {"address": "0xB3C8e5534F007eD0e2eB5cc3A0b8242bdC036903", "decimals": 18,
+                           "underlying": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", "underlying_decimals": 18},
+        "aENS v3 (18)":   {"address": "0x1c60D7F49CFFe8831c6C47C76C097cEA251fE627", "decimals": 18,
+                           "underlying": "0xC18360217D8F7Ab5E7c516566761Ea12Ce7F9D72", "underlying_decimals": 18},
     }
 
-    # ------- User's saved tokens (session-scoped) -------
+    # user's saved tokens (session)
     if "aave_my_tokens" not in st.session_state:
         st.session_state["aave_my_tokens"] = {k: v.copy() for k, v in AAVE_V3_PRESETS.items()}
 
     aave_tabs = st.tabs(["aToken Interest (v3)"])
 
     with aave_tabs[0]:
-        st.subheader("aToken Interest — daily accrual (non-rebasing)")
+        st.subheader("aToken Interest — daily accrual in underlying units")
 
         col0, col1, col2 = st.columns([2, 2, 2])
         with col0:
@@ -318,9 +250,13 @@ with proto_tabs[1]:
 
         active = st.session_state["aave_my_tokens"][active_label]
         atoken_addr = st.text_input("aToken contract", value=active["address"])
-        token_decimals = st.number_input("Token decimals", value=active["decimals"], min_value=0, max_value=36, step=1)
+        token_decimals = st.number_input("aToken decimals", value=active["decimals"], min_value=0, max_value=36, step=1)
 
-        # Save edits back to "My tokens" (preserve underlying fields too)
+        # keep underlying metadata alongside edits
+        if "underlying" not in active:
+            active["underlying"] = ""
+        if "underlying_decimals" not in active:
+            active["underlying_decimals"] = int(token_decimals)
         st.session_state["aave_my_tokens"][active_label] = {
             "address": atoken_addr,
             "decimals": int(token_decimals),
@@ -334,7 +270,6 @@ with proto_tabs[1]:
         if "atoken_first_activity" not in st.session_state:
             st.session_state["atoken_first_activity"] = None
 
-        # First-activity finder
         if st.button("Find first activity for selected aToken"):
             if not wallet or not INFURA_URL:
                 st.error("Enter wallet + INFURA_URL.")
@@ -374,10 +309,8 @@ with proto_tabs[1]:
         with c2:
             end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
 
-        stream_rows_atoken = st.toggle("Stream rows live", value=True, key="atoken_stream")
-        st.caption("Interest (underlying) = (end_balance − start_balance) + (withdrawals − deposits). Deposits/withdrawals are underlying ERC-20 transfers with Aave.")
+        st.caption("Interest (underlying) = (end_balance − start_balance) + (withdrawals − deposits).")
 
-        # Cache wrapper that passes underlying info so deposits/withdrawals are computed from underlying flows
         @st.cache_data(show_spinner=False, ttl=900)
         def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str,
                            rpc_url: str, dec: int, underlying_addr: str, underlying_decimals: int) -> pd.DataFrame:
@@ -390,7 +323,6 @@ with proto_tabs[1]:
                 include_default_aave_eth_v3=True,
             )
 
-        # Actions
         a1, a2, a3 = st.columns([1, 1, 1])
         with a1:
             run = st.button("Compute this range", key="run_atoken_range")
@@ -408,21 +340,19 @@ with proto_tabs[1]:
             start_dt, end_dt = s, e
             run = True
 
-        # Executor (row-by-row like stETH)
         def run_window_and_stream_atoken(start_dt: date, end_dt: date):
             total_days = (end_dt - start_dt).days + 1
-            if total_days <= 0:
-                st.info("Empty window."); return
-            if total_days > 180:
-                st.error(f"Window too large: {total_days} days. Please run ≤ 180 days."); return
+            if total_days <= 0: st.info("Empty window."); return
+            if total_days > 180: st.error(f"Window too large: {total_days} days. Please run ≤ 180 days."); return
 
             table_ph = st.empty()
             status_ph = st.empty()
             prog = st.progress(0, text="Starting…")
 
             # pull underlying metadata once per run
-            underlying_addr = st.session_state["aave_my_tokens"][active_label].get("underlying")
-            underlying_decimals = st.session_state["aave_my_tokens"][active_label].get("underlying_decimals", int(token_decimals))
+            active_now = st.session_state["aave_my_tokens"][active_label]
+            underlying_addr = active_now.get("underlying")
+            underlying_decimals = active_now.get("underlying_decimals", int(token_decimals))
 
             done = 0
             cur = start_dt
@@ -438,7 +368,7 @@ with proto_tabs[1]:
                     prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
 
                 if df_day is not None and not df_day.empty:
-                    # Tag for clarity
+                    # tag; no counterparty columns exposed
                     df_day["token_address"] = atoken_addr
                     df_day["underlying_address"] = underlying_addr
 
@@ -465,7 +395,6 @@ with proto_tabs[1]:
             else:
                 run_window_and_stream_atoken(start_dt, end_dt)
 
-        # Output
         accum = st.session_state["atoken_accum"]
         st.markdown("### Accumulated results (Aave aTokens)")
         if not accum.empty:
