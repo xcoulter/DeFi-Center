@@ -10,6 +10,7 @@ from trackers.steth import (
 from trackers.ausdc import (
     get_ausdc_interest_range,
     get_first_activity_date_ausdc,
+    get_first_activity_date_atoken,
 )
 
 st.set_page_config(page_title="DeFi Center", layout="wide")
