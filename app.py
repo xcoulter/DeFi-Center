@@ -10,7 +10,7 @@ from trackers.steth import (
 from trackers.ausdc import (
     get_atoken_interest_range,
     get_first_activity_date_atoken,
-    get_underlying_flows_range,   # NEW
+    # get_underlying_flows_range,  # optional: only if you want a separate flows table
 )
 
 st.set_page_config(page_title="💸 DeFi Center", layout="wide")
@@ -375,11 +375,20 @@ with proto_tabs[1]:
             end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
 
         stream_rows_atoken = st.toggle("Stream rows live", value=True, key="atoken_stream")
-        st.caption("Interest = (end_balance − start_balance) + (withdrawals − deposits). Deposits/withdrawals are aToken burn/mint events.")
+        st.caption("Interest (underlying) = (end_balance − start_balance) + (withdrawals − deposits). Deposits/withdrawals are underlying ERC-20 transfers with Aave.")
 
+        # Cache wrapper that passes underlying info so deposits/withdrawals are computed from underlying flows
         @st.cache_data(show_spinner=False, ttl=900)
-        def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str, rpc_url: str, dec: int) -> pd.DataFrame:
-            return get_atoken_interest_range(wallet_addr, token, start_iso, end_iso, infura_url=rpc_url, decimals=dec)
+        def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str,
+                           rpc_url: str, dec: int, underlying_addr: str, underlying_decimals: int) -> pd.DataFrame:
+            return get_atoken_interest_range(
+                wallet_addr, token, start_iso, end_iso,
+                infura_url=rpc_url,
+                decimals=dec,
+                underlying_token=underlying_addr,
+                underlying_decimals=underlying_decimals,
+                include_default_aave_eth_v3=True,
+            )
 
         # Actions
         a1, a2, a3 = st.columns([1, 1, 1])
@@ -411,46 +420,37 @@ with proto_tabs[1]:
             status_ph = st.empty()
             prog = st.progress(0, text="Starting…")
 
+            # pull underlying metadata once per run
+            underlying_addr = st.session_state["aave_my_tokens"][active_label].get("underlying")
+            underlying_decimals = st.session_state["aave_my_tokens"][active_label].get("underlying_decimals", int(token_decimals))
+
             done = 0
             cur = start_dt
             while cur <= end_dt:
                 try:
-                    df_day = _cached_atoken(wallet, atoken_addr, cur.isoformat(), cur.isoformat(), INFURA_URL, int(token_decimals))
+                    df_day = _cached_atoken(
+                        wallet, atoken_addr,
+                        cur.isoformat(), cur.isoformat(),
+                        INFURA_URL, int(token_decimals),
+                        underlying_addr, int(underlying_decimals)
+                    )
                 except Exception as e:
                     prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
 
                 if df_day is not None and not df_day.empty:
+                    # Tag for clarity
                     df_day["token_address"] = atoken_addr
+                    df_day["underlying_address"] = underlying_addr
+
                     acc = st.session_state["atoken_accum"]
                     acc = pd.concat([acc, df_day], ignore_index=True)
-
-                    # --- NEW: also pull underlying flows (USDC for aUSDC, WETH for aWETH, etc.) ---
-                    underlying_addr = active.get("underlying")
-                    underlying_decimals = active.get("underlying_decimals", int(token_decimals))
-                    if underlying_addr:
-                        try:
-                            df_flows = get_underlying_flows_range(
-                                wallet,
-                                underlying_addr,
-                                cur.isoformat(),
-                                cur.isoformat(),
-                                INFURA_URL,
-                                decimals=int(underlying_decimals),
-                                include_default_aave_eth_v3=True,
-                            )
-                            if not df_flows.empty:
-                                df_flows["token_address"] = underlying_addr
-                                acc = pd.concat([acc, df_flows], ignore_index=True)
-                        except Exception as e:
-                            status_ph.warning(f"Flow fetch failed on {cur}: {e}")
-
                     acc.drop_duplicates(subset=["date","start_block","end_block","token_address"], keep="last", inplace=True)
                     acc.sort_values(["token_address","date"], inplace=True)
                     acc.reset_index(drop=True, inplace=True)
                     st.session_state["atoken_accum"] = acc
 
                     table_ph.dataframe(acc, use_container_width=True)
-                    status_ph.info(f"Fetched {cur} ({len(df_day)} row + flows)")
+                    status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
 
                 done += 1
                 prog.progress(min(int(done / total_days * 100), 100), text=f"Processed {done}/{total_days} day(s)…")
@@ -467,7 +467,7 @@ with proto_tabs[1]:
 
         # Output
         accum = st.session_state["atoken_accum"]
-        st.markdown("### Accumulated results (Aave aTokens + Underlying Flows)")
+        st.markdown("### Accumulated results (Aave aTokens)")
         if not accum.empty:
             st.dataframe(accum, use_container_width=True)
             st.download_button(
