@@ -318,8 +318,8 @@ with proto_tabs[1]:
                 wallet_addr, token, start_iso, end_iso,
                 infura_url=rpc_url,
                 decimals=dec,
-                underlying_token=underlying_addr,
-                underlying_decimals=underlying_decimals,
+                underlying_token=underlying_addr,           # now required
+                underlying_decimals=underlying_decimals,    # now required
                 include_default_aave_eth_v3=True,
             )
 
@@ -352,7 +352,7 @@ with proto_tabs[1]:
             # pull underlying metadata once per run
             active_now = st.session_state["aave_my_tokens"][active_label]
             underlying_addr = active_now.get("underlying")
-            underlying_decimals = active_now.get("underlying_decimals", int(token_decimals))
+            underlying_decimals = int(active_now.get("underlying_decimals", token_decimals))
 
             done = 0
             cur = start_dt
@@ -362,7 +362,7 @@ with proto_tabs[1]:
                         wallet, atoken_addr,
                         cur.isoformat(), cur.isoformat(),
                         INFURA_URL, int(token_decimals),
-                        underlying_addr, int(underlying_decimals)
+                        underlying_addr, underlying_decimals
                     )
                 except Exception as e:
                     prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
