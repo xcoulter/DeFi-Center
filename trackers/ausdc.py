@@ -252,6 +252,10 @@ def get_atoken_interest_range(
     cp: Set[str] = set(a.lower() for a in (counterparties or []))
     if include_default_aave_eth_v3:
         cp |= DEFAULT_AAVE_ETH_V3_COUNTERPARTIES
+        
+    # ---- aWETH override: track ONLY the specified WETH Gateway address ----
+    if (underlying_token or "").lower() == WETH_MAINNET:
+        cp = {AAVE_ETH_V3_WETH_GATEWAY_ONLY}
 
     # Dates
     start_dt = datetime.strptime(start_iso, "%Y-%m-%d").date()
