@@ -141,6 +141,10 @@ def get_first_activity_date_ausdc(wallet: str, token: str, infura_url: Optional[
     blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(fb), False])
     ts = int(blk_obj["timestamp"], 16)
     return datetime.fromtimestamp(ts, tz=timezone.utc).date()
+    
+def get_first_activity_date_atoken(wallet: str, token: str, infura_url: Optional[str] = None):
+    # generic wrapper so app.py’s call works for any aToken (aUSDC, aWETH, etc.)
+    return get_first_activity_date_ausdc(wallet, token, infura_url)
 
 # ---------------- Daily math (deposits/withdrawals only) ----------------
 
