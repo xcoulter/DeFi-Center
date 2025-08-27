@@ -225,7 +225,7 @@ with proto_tabs[1]:
         "aUSDC v3 (6)":   {"address": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c", "decimals": 6},
         "aDAI v3 (18)":   {"address": "0x018008bfb33d285247A21d44E50697654f754e63", "decimals": 18},
         "aUSDT v3 (6)":   {"address": "0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a", "decimals": 6},
-        "aWETH v3 (18)":  {"address": "0xE0bCe3f16E2a9e06d0Dda3aA6884A54792F5BcE0", "decimals": 18},
+        "aWETH v3 (18)":  {"address": "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8", "decimals": 18},
         "awstETH v3 (18)":{"address": "0x0B925Ed163218f6662a35e0F0371Ac234f9E9371", "decimals": 18},
         "aWBTC v3 (8)":   {"address": "0x078f358208685046a11C85e8ad32895DED33A249", "decimals": 8},
         "aLINK v3 (18)":  {"address": "0x191c10Aa4AF7C30e871E70C95dB0E4eb77237530", "decimals": 18},
