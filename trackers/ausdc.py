@@ -287,7 +287,16 @@ to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
     infura_url, underlying_token, wallet, start_blk, end_blk, cp
 )
 
-# Convert flows into balance units if decimals differ
+# --- Deposits/withdrawals: ALWAYS from UNDERLYING flows (USDC/WETH/etc.) ---
+if not underlying_token:
+    raise RuntimeError("underlying_token is required to compute deposits/withdrawals in underlying units")
+
+# Get flows in underlying token units (U_DEC)
+to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
+    infura_url, underlying_token, wallet, start_blk, end_blk, cp
+)
+
+# Convert flows to aToken balance units (BAL_DEC) so all columns match
 if U_DEC == BAL_DEC:
     deposits_raw = to_cp_u
     withdrawals_raw = from_cp_u
