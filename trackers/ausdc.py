@@ -16,6 +16,9 @@ DEFAULT_AAVE_ETH_V3_COUNTERPARTIES: Set[str] = {
     AAVE_ETH_V3_POOL,
     AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY,
 }
+# aWETH-specific override
+AAVE_ETH_V3_WETH_GATEWAY_ONLY = "0xD322A49006FC828F9B5B37Ab215F99B4E5caB19C".lower()
+WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".lower()
 
 # ───────────────────────────── Utils ─────────────────────────────
 def _int_hex_safe(x: Optional[str]) -> int:
