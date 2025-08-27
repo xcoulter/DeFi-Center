@@ -8,10 +8,10 @@ from trackers.steth import (
     get_first_activity_date,   # fast helper (binary search on balanceOf)
 )
 from trackers.ausdc import (
-    get_ausdc_interest_range,
-    get_first_activity_date_ausdc,
+    get_atoken_interest_range,
     get_first_activity_date_atoken,
 )
+
 
 st.set_page_config(page_title="DeFi Center", layout="wide")
 st.title("💸 DeFi Center")
