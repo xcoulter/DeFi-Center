@@ -1,3 +1,4 @@
+# trackers/ausdc.py
 import os
 import time
 import requests
@@ -9,12 +10,15 @@ from typing import Optional, Tuple
 TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO_ADDR_TOPIC = "0x" + "0" * 64  # 32-byte topic for address(0)
 
-# ---------------- RPC helper (with 429 handling) ----------------
-def _int_hex_safe(x: str) -> int:
-    """Parse hex like '0x0', and treat bare '0x' / None as 0."""
+# ============================ Utils ============================
+
+def _int_hex_safe(x: Optional[str]) -> int:
+    """Parse hex like '0x0' safely; treat bare '0x' / None as 0."""
     if not x or x == "0x":
         return 0
     return int(x, 16)
+
+# ============================ RPC ==============================
 
 def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 12.0):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
@@ -24,6 +28,7 @@ def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 
         try:
             r = requests.post(infura_url, json=payload, timeout=timeout)
             if r.status_code == 429:
+                # Respect rate limiting
                 ra = r.headers.get("Retry-After")
                 sleep_s = float(ra) if ra else backoff
                 time.sleep(sleep_s)
@@ -33,7 +38,8 @@ def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 
             js = r.json()
             if "error" in js:
                 last_err = js["error"]
-                time.sleep(backoff); backoff = min(backoff * 1.8, 10.0)
+                time.sleep(backoff)
+                backoff = min(backoff * 1.8, 10.0)
                 continue
             return js["result"]
         except requests.exceptions.HTTPError as e:
@@ -44,13 +50,20 @@ def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 
             time.sleep(backoff); backoff = min(backoff * 1.8, 10.0)
     raise RuntimeError(f"RPC failed: {method} ({last_err})")
 
+def _assert_token_on_network(infura_url: str, token: str):
+    """Raise if the token has no bytecode on the connected chain."""
+    code = _rpc(infura_url, "eth_getCode", [token, "latest"])
+    if not code or code == "0x":
+        raise RuntimeError(f"Token {token} has no bytecode on this RPC network (wrong chain?).")
+
 def _latest_block(infura_url: str) -> int:
-    return int(_rpc(infura_url, "eth_blockNumber", []), 16)
+    return _int_hex_safe(_rpc(infura_url, "eth_blockNumber", []))
 
 def _block_by_time(infura_url: str, ts: int, mode: str = "before") -> int:
     """
-    Binary search: 'before' => max block with ts <= target
-                   'after'  => min block with ts >= target
+    Binary search by timestamp:
+      - 'before': max block with ts <= target
+      - 'after' : min block with ts >= target
     """
     latest = _latest_block(infura_url)
     lo, hi = 0, latest
@@ -58,17 +71,20 @@ def _block_by_time(infura_url: str, ts: int, mode: str = "before") -> int:
     while lo <= hi:
         mid = (lo + hi) // 2
         blk = _rpc(infura_url, "eth_getBlockByNumber", [hex(mid), False])
-        tsm = int(blk["timestamp"], 16)
+        tsm = _int_hex_safe(blk.get("timestamp"))
         if tsm == ts:
+            best = mid
             if mode == "before":
-                best = mid; lo = mid + 1
+                lo = mid + 1
             else:
-                best = mid; hi = mid - 1
+                hi = mid - 1
         elif tsm < ts:
-            if mode == "before": best = mid
+            if mode == "before":
+                best = mid
             lo = mid + 1
         else:
-            if mode == "after": best = mid
+            if mode == "after":
+                best = mid
             hi = mid - 1
     return 0 if best is None else best
 
@@ -78,8 +94,7 @@ def _balance_of(infura_url: str, token: str, wallet: str, block_num: int) -> int
     res = _rpc(infura_url, "eth_call", [{"to": token, "data": selector}, hex(block_num)])
     return _int_hex_safe(res)
 
-
-# ---------------- Logs (chunked & gentle pacing) ----------------
+# ============================ Logs =============================
 
 def _get_logs_chunked(
     infura_url: str,
@@ -90,6 +105,7 @@ def _get_logs_chunked(
     stop_at_first: bool = False,
     chunk_size: int = 1000
 ):
+    """Gentle, chunked log retrieval with optional early stop."""
     out = []
     b = start_block
     INTER_CHUNK_SLEEP = 0.35
@@ -102,15 +118,15 @@ def _get_logs_chunked(
             "topics":    topics
         }]
         logs = _rpc(infura_url, "eth_getLogs", params) or []
-        if stop_at_first and logs:
-            return [logs[0]]
         if logs:
+            if stop_at_first:
+                return [logs[0]]
             out.extend(logs)
         b = e + 1
         time.sleep(INTER_CHUNK_SLEEP)
     return out
 
-# ---------------- First interaction helpers ----------------
+# ====================== First-activity search ===================
 
 def _find_first_nonzero_balance_block(infura_url: str, token: str, wallet: str) -> Optional[int]:
     latest = _latest_block(infura_url)
@@ -119,7 +135,8 @@ def _find_first_nonzero_balance_block(infura_url: str, token: str, wallet: str) 
     # Start around 2020 (covers Aave v2+ launch era on Ethereum)
     genesis_ts = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp())
     lo = _block_by_time(infura_url, genesis_ts, "after")
-    if lo <= 0: lo = 1
+    if lo <= 0:
+        lo = 1
     hi = latest
     ans = None
     while lo <= hi:
@@ -133,18 +150,60 @@ def _find_first_nonzero_balance_block(infura_url: str, token: str, wallet: str) 
     return ans
 
 def get_first_activity_date_atoken(wallet: str, token: str, infura_url: Optional[str] = None) -> Optional[date]:
-    """UTC date of earliest non-zero aToken balance; None if never held."""
+    """
+    Returns the UTC date of earliest interaction with the aToken:
+      1) Try earliest non-zero balance via binary search.
+      2) If none found (e.g., position opened & closed quickly), fall back to earliest Transfer log.
+    """
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
         raise RuntimeError("Missing INFURA_URL")
+
+    # Ensure token exists on this chain
+    _assert_token_on_network(infura_url, token)
+
+    # 1) Balance-based earliest block
     fb = _find_first_nonzero_balance_block(infura_url, token, wallet)
-    if fb is None:
-        return None
-    blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(fb), False])
-    ts = int(blk_obj["timestamp"], 16)
+    if fb is not None:
+        blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(fb), False])
+        ts = _int_hex_safe(blk_obj.get("timestamp"))
+        return datetime.fromtimestamp(ts, tz=timezone.utc).date()
+
+    # 2) Fallback: earliest Transfer involving wallet (to or from)
+    latest = _latest_block(infura_url)
+    genesis_ts = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp())
+    start_blk = _block_by_time(infura_url, genesis_ts, "after")
+    if start_blk <= 0:
+        start_blk = 1
+
+    wallet_topic = "0x" + wallet.lower()[2:].rjust(64, "0")
+
+    # Try "to = wallet" first
+    logs_in = _get_logs_chunked(
+        infura_url, token, start_blk, latest,
+        [TRANSFER_SIG, None, wallet_topic],
+        stop_at_first=True, chunk_size=50_000
+    )
+    first_log = logs_in[0] if logs_in else None
+
+    if not first_log:
+        # Try "from = wallet"
+        logs_out = _get_logs_chunked(
+            infura_url, token, start_blk, latest,
+            [TRANSFER_SIG, wallet_topic, None],
+            stop_at_first=True, chunk_size=50_000
+        )
+        first_log = logs_out[0] if logs_out else None
+
+    if not first_log:
+        return None  # truly no activity on this chain/token
+
+    blk_num = _int_hex_safe(first_log.get("blockNumber"))
+    blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(blk_num), False])
+    ts = _int_hex_safe(blk_obj.get("timestamp"))
     return datetime.fromtimestamp(ts, tz=timezone.utc).date()
 
-# ---------------- Daily math (deposits/withdrawals only) ----------------
+# ====================== Daily interest range ====================
 
 def _deposits_withdrawals_for_day(
     infura_url: str, token: str, wallet: str, start_block: int, end_block: int
@@ -163,8 +222,8 @@ def _deposits_withdrawals_for_day(
     wdr_logs = _get_logs_chunked(infura_url, token, start_block, end_block,
                                  [TRANSFER_SIG, wtopic, ZERO_ADDR_TOPIC]) or []
 
-    deposits = sum(int(l["data"], 16) for l in dep_logs)
-    withdrawals = sum(int(l["data"], 16) for l in wdr_logs)
+    deposits = sum(_int_hex_safe(l.get("data")) for l in dep_logs)
+    withdrawals = sum(_int_hex_safe(l.get("data")) for l in wdr_logs)
     return deposits, withdrawals
 
 def _iterate_days(start_dt: date, end_dt: date):
@@ -173,8 +232,6 @@ def _iterate_days(start_dt: date, end_dt: date):
     while cur <= end_dt:
         yield cur
         cur = cur + one
-
-# ---------------- Public API (generic) ----------------
 
 def get_atoken_interest_range(
     wallet: str,
@@ -202,7 +259,7 @@ def get_atoken_interest_range(
         return pd.DataFrame([])
 
     latest = _latest_block(infura_url)
-    latest_ts = int(_rpc(infura_url, "eth_getBlockByNumber", [hex(latest), False])["timestamp"], 16)
+    latest_ts = _int_hex_safe(_rpc(infura_url, "eth_getBlockByNumber", [hex(latest), False]).get("timestamp"))
 
     rows = []
     for d in _iterate_days(start_dt, end_dt):
@@ -233,12 +290,12 @@ def get_atoken_interest_range(
             "date": d.isoformat(),
             "start_block": start_blk,
             "end_block": end_blk,
-            "start_balance":      start_bal / UNIT,
-            "end_balance":        end_bal   / UNIT,
-            "deposits":           deposits_wei    / UNIT,
-            "withdrawals":        withdrawals_wei / UNIT,
-            "net_transfers":      (withdrawals_wei - deposits_wei) / UNIT,  # positive reduces position
-            "daily_interest":     interest_wei / UNIT,
+            "start_balance":   start_bal / UNIT,
+            "end_balance":     end_bal   / UNIT,
+            "deposits":        deposits_wei    / UNIT,
+            "withdrawals":     withdrawals_wei / UNIT,
+            "net_transfers":   (withdrawals_wei - deposits_wei) / UNIT,  # positive reduces position
+            "daily_interest":  interest_wei / UNIT,
         })
 
     return pd.DataFrame(rows)
