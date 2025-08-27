@@ -214,7 +214,7 @@ def _underlying_flows_wallet_vs_counterparties(
             from_cp += _int_hex_safe(l.get("data"))
             
     # --- Special case: ETH deposits/withdrawals via WETH Gateway ---
-    if token.lower() == WETH_MAINNET:
+    if underlying_token.lower() == WETH_MAINNET:
         # Fetch normal ETH transfers (value field) in this block range
         for blk in range(start_block, end_block + 1):
             txs = _rpc(infura_url, "eth_getBlockByNumber", [hex(blk), True])
