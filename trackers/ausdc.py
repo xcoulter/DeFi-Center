@@ -194,15 +194,20 @@ def _underlying_flows_wallet_vs_counterparties(
     wtopic = _addr_topic(wallet)
     cps = {c.lower() for c in counterparties}
 
-    logs_from = _get_logs_chunked(infura_url, underlying_token, start_block, end_block,
-                                  [TRANSFER_SIG, wtopic, None]) or []
-    logs_to   = _get_logs_chunked(infura_url, underlying_token, start_block, end_block,
-                                  [TRANSFER_SIG, None, wtopic]) or []
+    logs_from = _get_logs_chunked(
+        infura_url, underlying_token, start_block, end_block,
+        [TRANSFER_SIG, wtopic, None]
+    ) or []
+    logs_to = _get_logs_chunked(
+        infura_url, underlying_token, start_block, end_block,
+        [TRANSFER_SIG, None, wtopic]
+    ) or []
 
     to_cp = 0
     from_cp = 0
     wl = wallet.lower()
 
+    # ERC-20 transfer logs
     for l in logs_from:
         frm, to = _topics_to_addresses(l.get("topics"))
         if frm == wl and to in cps:
@@ -212,7 +217,7 @@ def _underlying_flows_wallet_vs_counterparties(
         frm, to = _topics_to_addresses(l.get("topics"))
         if to == wl and frm in cps:
             from_cp += _int_hex_safe(l.get("data"))
-            
+
     # --- Special case: ETH deposits/withdrawals via WETH Gateway ---
     if underlying_token.lower() == WETH_MAINNET:
         for blk in range(start_block, end_block + 1):
