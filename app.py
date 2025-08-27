@@ -355,6 +355,7 @@ with proto_tabs[1]:
                     prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
 
                 if df_day is not None and not df_day.empty:
+                    df_day["token_address"] = atoken_addr
                     acc = st.session_state["atoken_accum"]
                     acc = pd.concat([acc, df_day], ignore_index=True)
                     acc.drop_duplicates(subset=["date","start_block","end_block","token_address"], keep="last", inplace=True)
