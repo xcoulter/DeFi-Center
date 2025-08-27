@@ -172,4 +172,159 @@ def get_first_activity_date_atoken(wallet: str, token: str, infura_url: Optional
     blk_num = _int_hex_safe(first_log.get("blockNumber"))
     blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(blk_num), False])
     ts = _int_hex_safe(blk_obj.get("timestamp"))
-    return datet
+    return datetime.fromtimestamp(ts, tz=timezone.utc).date()
+
+# ─────── Underlying ERC-20 flows vs counterparties ───────
+def _underlying_flows_wallet_vs_counterparties(
+    infura_url: str,
+    underlying_token: str,
+    wallet: str,
+    start_block: int,
+    end_block: int,
+    counterparties: Iterable[str],
+) -> Tuple[int, int]:
+    """
+    Returns (to_cp_wei, from_cp_wei) in UNDERLYING wei:
+      to_cp_wei   = wallet -> any counterparty (outflow, deposit)
+      from_cp_wei = counterparty -> wallet (inflow, withdrawal)
+    """
+    wtopic = _addr_topic(wallet)
+    cps = {c.lower() for c in counterparties}
+
+    logs_from = _get_logs_chunked(infura_url, underlying_token, start_block, end_block,
+                                  [TRANSFER_SIG, wtopic, None]) or []
+    logs_to   = _get_logs_chunked(infura_url, underlying_token, start_block, end_block,
+                                  [TRANSFER_SIG, None, wtopic]) or []
+
+    to_cp = 0
+    from_cp = 0
+    wl = wallet.lower()
+
+    for l in logs_from:
+        frm, to = _topics_to_addresses(l.get("topics"))
+        if frm == wl and to in cps:
+            to_cp += _int_hex_safe(l.get("data"))
+
+    for l in logs_to:
+        frm, to = _topics_to_addresses(l.get("topics"))
+        if to == wl and frm in cps:
+            from_cp += _int_hex_safe(l.get("data"))
+
+    return to_cp, from_cp
+
+# ─────────────── aToken daily interest (UNDERLYING-based) ───────────────
+def get_atoken_interest_range(
+    wallet: str,
+    token: str,                     # aToken (e.g., aUSDC, aWETH)
+    start_iso: str,
+    end_iso: str,
+    infura_url: Optional[str] = None,
+    decimals: int = 18,             # aToken decimals (same as underlying for Aave)
+    underlying_token: Optional[str] = None,          # REQUIRED: USDC/WETH/etc.
+    underlying_decimals: Optional[int] = None,       # REQUIRED
+    counterparties: Optional[Iterable[str]] = None,  # optional extra Aave addresses
+    include_default_aave_eth_v3: bool = True,
+) -> pd.DataFrame:
+    """
+    Daily interest in UNDERLYING units using:
+      - aToken.balanceOf for start/end (already underlying-equivalent)
+      - UNDERLYING ERC-20 transfers wallet<->Aave for deposits/withdrawals
+
+    Continuous windows: for every row after the first, start_block == previous end_block
+
+    interest = (end_balance - start_balance) + (withdrawals - deposits)
+    """
+    infura_url = (infura_url or os.getenv("INFURA_URL","")).strip()
+    if not infura_url:
+        raise RuntimeError("Missing INFURA_URL")
+    if not underlying_token:
+        raise RuntimeError("underlying_token is required to compute deposits/withdrawals in underlying units")
+
+    # Units
+    BAL_DEC = int(decimals)
+    U_DEC = int(underlying_decimals) if underlying_decimals is not None else BAL_DEC
+    UNIT_BAL = 10 ** BAL_DEC
+
+    # Counterparties set (Aave Pool / WETH Gateway etc.)
+    cp: Set[str] = set(a.lower() for a in (counterparties or []))
+    if include_default_aave_eth_v3:
+        cp |= DEFAULT_AAVE_ETH_V3_COUNTERPARTIES
+
+    # Dates
+    start_dt = datetime.strptime(start_iso, "%Y-%m-%d").date()
+    end_dt   = datetime.strptime(end_iso,   "%Y-%m-%d").date()
+    if end_dt < start_dt:
+        return pd.DataFrame([])
+
+    latest = _latest_block(infura_url)
+    latest_ts = _int_hex_safe(_rpc(infura_url, "eth_getBlockByNumber", [hex(latest), False]).get("timestamp"))
+
+    rows = []
+    prev_end_blk: Optional[int] = None
+
+    for d in _iterate_days(start_dt, end_dt):
+        # UTC bounds
+        start_ts = int(datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+        end_ts   = int(datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+        if start_ts > latest_ts:
+            break
+        if end_ts > latest_ts:
+            end_ts = latest_ts
+
+        # Blocks (enforce continuity after first row)
+        if prev_end_blk is None:
+            start_blk = _block_by_time(infura_url, start_ts, "after")
+        else:
+            start_blk = prev_end_blk
+        end_blk = _block_by_time(infura_url, end_ts, "before")
+        if end_blk < start_blk:
+            end_blk = start_blk
+
+        # aToken balances (already underlying-equivalent)
+        start_bal_raw = _balance_of(infura_url, token, wallet, start_blk)
+        end_bal_raw   = _balance_of(infura_url, token, wallet, end_blk)
+
+        # UNDERLYING flows (wallet <-> Aave counterparties)
+        to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
+            infura_url, underlying_token, wallet, start_blk, end_blk, cp
+        )
+
+        # Convert underlying (U_DEC) to balance units (BAL_DEC) so all columns align
+        if U_DEC == BAL_DEC:
+            deposits_raw = to_cp_u
+            withdrawals_raw = from_cp_u
+        elif U_DEC > BAL_DEC:
+            scale = 10 ** (U_DEC - BAL_DEC)   # scale down
+            deposits_raw = to_cp_u // scale
+            withdrawals_raw = from_cp_u // scale
+        else:
+            scale = 10 ** (BAL_DEC - U_DEC)   # scale up
+            deposits_raw = to_cp_u * scale
+            withdrawals_raw = from_cp_u * scale
+
+        net_transfers_raw = withdrawals_raw - deposits_raw
+        interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
+
+        rows.append({
+            "date": d.isoformat(),
+            "start_block": start_blk,
+            "end_block": end_blk,
+            "start_balance":   start_bal_raw / UNIT_BAL,
+            "end_balance":     end_bal_raw   / UNIT_BAL,
+            "deposits":        deposits_raw  / UNIT_BAL,
+            "withdrawals":     withdrawals_raw / UNIT_BAL,
+            "net_transfers":   net_transfers_raw / UNIT_BAL,
+            "daily_interest":  interest_raw / UNIT_BAL,
+        })
+
+        prev_end_blk = end_blk  # continuity
+
+    return pd.DataFrame(rows)
+
+# ─────────── Day iterator ───────────
+def _iterate_days(start_dt: date, end_dt: date):
+    cur = start_dt
+    one = timedelta(days=1)
+    while cur <= end_dt:
+        yield cur
+        cur = cur + one
