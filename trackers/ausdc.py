@@ -215,23 +215,24 @@ def _underlying_flows_wallet_vs_counterparties(
             
     # --- Special case: ETH deposits/withdrawals via WETH Gateway ---
     if underlying_token.lower() == WETH_MAINNET:
-        # Fetch normal ETH transfers (value field) in this block range
         for blk in range(start_block, end_block + 1):
-            txs = _rpc(infura_url, "eth_getBlockByNumber", [hex(blk), True])
-            if not txs or "transactions" not in txs:
+            blk_obj = _rpc(infura_url, "eth_getBlockByNumber", [hex(blk), True])
+            if not blk_obj or "transactions" not in blk_obj:
                 continue
-            for tx in txs["transactions"]:
+            for tx in blk_obj["transactions"]:
                 from_addr = (tx.get("from") or "").lower()
                 to_addr = (tx.get("to") or "").lower()
                 val = int(tx.get("value", "0x0"), 16)
+                if val <= 0:
+                    continue
 
                 # Wallet -> Gateway (deposit)
-                if from_addr == wallet.lower() and to_addr == AAVE_ETH_V3_WETH_GATEWAY_ONLY and val > 0:
-                    to_sum += val
+                if from_addr == wl and to_addr == AAVE_ETH_V3_WETH_GATEWAY_ONLY:
+                    to_cp += val
 
                 # Gateway -> Wallet (withdrawal)
-                if from_addr == AAVE_ETH_V3_WETH_GATEWAY_ONLY and to_addr == wallet.lower() and val > 0:
-                    from_sum += val
+                if from_addr == AAVE_ETH_V3_WETH_GATEWAY_ONLY and to_addr == wl:
+                    from_cp += val
 
     return to_cp, from_cp
 
