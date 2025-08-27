@@ -10,6 +10,11 @@ TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3
 ZERO_ADDR_TOPIC = "0x" + "0" * 64  # 32-byte topic for address(0)
 
 # ---------------- RPC helper (with 429 handling) ----------------
+def _int_hex_safe(x: str) -> int:
+    """Parse hex like '0x0', and treat bare '0x' / None as 0."""
+    if not x or x == "0x":
+        return 0
+    return int(x, 16)
 
 def _rpc(infura_url: str, method: str, params, tries: int = 5, timeout: float = 12.0):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
@@ -71,7 +76,8 @@ def _balance_of(infura_url: str, token: str, wallet: str, block_num: int) -> int
     # balanceOf(address) selector 0x70a08231 + 12-byte pad + address (lowercased)
     selector = "0x70a08231" + "0"*24 + wallet.lower()[2:]
     res = _rpc(infura_url, "eth_call", [{"to": token, "data": selector}, hex(block_num)])
-    return int(res, 16)
+    return _int_hex_safe(res)
+
 
 # ---------------- Logs (chunked & gentle pacing) ----------------
 
