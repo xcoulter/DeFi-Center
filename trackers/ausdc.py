@@ -212,6 +212,26 @@ def _underlying_flows_wallet_vs_counterparties(
         frm, to = _topics_to_addresses(l.get("topics"))
         if to == wl and frm in cps:
             from_cp += _int_hex_safe(l.get("data"))
+            
+    # --- Special case: ETH deposits/withdrawals via WETH Gateway ---
+    if token.lower() == WETH_MAINNET:
+        # Fetch normal ETH transfers (value field) in this block range
+        for blk in range(start_block, end_block + 1):
+            txs = _rpc(infura_url, "eth_getBlockByNumber", [hex(blk), True])
+            if not txs or "transactions" not in txs:
+                continue
+            for tx in txs["transactions"]:
+                from_addr = (tx.get("from") or "").lower()
+                to_addr = (tx.get("to") or "").lower()
+                val = int(tx.get("value", "0x0"), 16)
+
+                # Wallet -> Gateway (deposit)
+                if from_addr == wallet.lower() and to_addr == AAVE_ETH_V3_WETH_GATEWAY_ONLY and val > 0:
+                    to_sum += val
+
+                # Gateway -> Wallet (withdrawal)
+                if from_addr == AAVE_ETH_V3_WETH_GATEWAY_ONLY and to_addr == wallet.lower() and val > 0:
+                    from_sum += val
 
     return to_cp, from_cp
 
