@@ -217,61 +217,41 @@ def _underlying_flows_wallet_vs_counterparties(
         frm, to = _topics_to_addresses(l.get("topics"))
         if to == wl and frm in cps:
             from_cp += _int_hex_safe(l.get("data"))
-
-        # --- Special case for aWETH WITHOUT ETH scans:
-    # Use WETH Transfer logs where the tx sender is the wallet
-    # Pattern:
-    #  - Deposit:   WETH Transfer gateway -> pool   (tx.from == wallet)
-    #  - Withdrawal: WETH Transfer pool -> gateway  (tx.from == wallet)
+    # --- aWETH special-case without ETH scans:
+    # Count WETH transfers that involve the WETH Gateway, but ONLY when the tx sender is the wallet.
     if underlying_token.lower() == WETH_MAINNET:
         wl = wallet.lower()
 
-        # topics for indexed Transfer(address indexed from, address indexed to, uint256 value)
-        t_from_gateway_to_pool = [
-            TRANSFER_SIG,
-            _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY),  # from = gateway
-            _addr_topic(AAVE_ETH_V3_POOL),               # to   = pool
-        ]
-        t_from_pool_to_gateway = [
-            TRANSFER_SIG,
-            _addr_topic(AAVE_ETH_V3_POOL),               # from = pool
-            _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY),  # to   = gateway
-        ]
+        # Topics for WETH Transfer
+        t_from_gateway_any = [TRANSFER_SIG, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY), None]
+        t_to_gateway_any   = [TRANSFER_SIG, None, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY)]
 
-        # Fetch logs only for these two flows (bounded by block range)
-        logs_dep = _get_logs_chunked(
-            infura_url, WETH_MAINNET, start_block, end_block, t_from_gateway_to_pool
-        ) or []
-        logs_wdr = _get_logs_chunked(
-            infura_url, WETH_MAINNET, start_block, end_block, t_from_pool_to_gateway
-        ) or []
+        logs_from_gw = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_from_gateway_any) or []
+        logs_to_gw   = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_to_gateway_any) or []
 
-        # Helper: check that the transaction was initiated by the wallet
-        def _tx_from_wallet(txh: str) -> bool:
+        def _tx_sender_is_wallet(txh: str) -> bool:
             try:
                 tx = _rpc(infura_url, "eth_getTransactionByHash", [txh])
                 return (tx and (tx.get("from") or "").lower() == wl)
             except Exception:
                 return False
 
-        # Sum deposits: gateway -> pool, but only when tx.from == wallet
+        # Deposits: WETH leaves gateway (from=gateway → any), tx sender is the wallet
         dep_sum = 0
-        for l in logs_dep:
+        for l in logs_from_gw:
             txh = l.get("transactionHash")
-            if txh and _tx_from_wallet(txh):
+            if txh and _tx_sender_is_wallet(txh):
                 dep_sum += _int_hex_safe(l.get("data"))
 
-        # Sum withdrawals: pool -> gateway, but only when tx.from == wallet
+        # Withdrawals: WETH enters gateway (to=gateway ← any), tx sender is the wallet
         wdr_sum = 0
-        for l in logs_wdr:
+        for l in logs_to_gw:
             txh = l.get("transactionHash")
-            if txh and _tx_from_wallet(txh):
+            if txh and _tx_sender_is_wallet(txh):
                 wdr_sum += _int_hex_safe(l.get("data"))
 
-        # Add to the running totals (these are UNDERLYING WETH wei)
         to_cp   += dep_sum     # wallet -> Aave (deposit)
         from_cp += wdr_sum     # Aave -> wallet (withdrawal)
-
 
     return to_cp, from_cp
 
