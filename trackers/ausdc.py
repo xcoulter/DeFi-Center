@@ -217,42 +217,56 @@ def _underlying_flows_wallet_vs_counterparties(
         frm, to = _topics_to_addresses(l.get("topics"))
         if to == wl and frm in cps:
             from_cp += _int_hex_safe(l.get("data"))
-    # --- aWETH special-case without ETH scans:
-    # Count WETH transfers that involve the WETH Gateway, but ONLY when the tx sender is the wallet.
-    if underlying_token.lower() == WETH_MAINNET:
-        wl = wallet.lower()
 
-        # Topics for WETH Transfer
-        t_from_gateway_any = [TRANSFER_SIG, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY), None]
-        t_to_gateway_any   = [TRANSFER_SIG, None, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY)]
-
-        logs_from_gw = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_from_gateway_any) or []
-        logs_to_gw   = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_to_gateway_any) or []
-
-        def _tx_sender_is_wallet(txh: str) -> bool:
+    # --- aWETH special-case WITHOUT ETH scans (instrumented) ---
+        if underlying_token.lower() == WETH_MAINNET:
+            wl = wallet.lower()
+    
+            # Topics for WETH Transfer involving the gateway
+            t_from_gateway_any = [TRANSFER_SIG, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY), None]
+            t_to_gateway_any   = [TRANSFER_SIG, None, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY)]
+    
+            logs_from_gw = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_from_gateway_any) or []
+            logs_to_gw   = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_to_gateway_any) or []
+    
+            # DEBUG counters
+            pre_dep = len(logs_from_gw)
+            pre_wdr = len(logs_to_gw)
+    
+            def _tx_sender_is_wallet(txh: str) -> bool:
+                try:
+                    tx = _rpc(infura_url, "eth_getTransactionByHash", [txh])
+                    return (tx and (tx.get("from") or "").lower() == wl)
+                except Exception:
+                    return False
+    
+            dep_sum = 0
+            dep_kept = 0
+            for l in logs_from_gw:
+                txh = l.get("transactionHash")
+                if txh and _tx_sender_is_wallet(txh):
+                    dep_sum += _int_hex_safe(l.get("data"))
+                    dep_kept += 1
+    
+            wdr_sum = 0
+            wdr_kept = 0
+            for l in logs_to_gw:
+                txh = l.get("transactionHash")
+                if txh and _tx_sender_is_wallet(txh):
+                    wdr_sum += _int_hex_safe(l.get("data"))
+                    wdr_kept += 1
+    
+            # If a status callback is wired, emit what we saw
             try:
-                tx = _rpc(infura_url, "eth_getTransactionByHash", [txh])
-                return (tx and (tx.get("from") or "").lower() == wl)
+                if 'status_cb' in globals() and callable(status_cb):
+                    status_cb(f"WETH gw logs: pre dep={pre_dep}, pre wdr={pre_wdr}, kept dep={dep_kept}, kept wdr={wdr_kept}")
             except Exception:
-                return False
+                pass
+    
+            to_cp   += dep_sum     # wallet -> Aave (deposit)
+            from_cp += wdr_sum     # Aave -> wallet (withdrawal)
 
-        # Deposits: WETH leaves gateway (from=gateway → any), tx sender is the wallet
-        dep_sum = 0
-        for l in logs_from_gw:
-            txh = l.get("transactionHash")
-            if txh and _tx_sender_is_wallet(txh):
-                dep_sum += _int_hex_safe(l.get("data"))
-
-        # Withdrawals: WETH enters gateway (to=gateway ← any), tx sender is the wallet
-        wdr_sum = 0
-        for l in logs_to_gw:
-            txh = l.get("transactionHash")
-            if txh and _tx_sender_is_wallet(txh):
-                wdr_sum += _int_hex_safe(l.get("data"))
-
-        to_cp   += dep_sum     # wallet -> Aave (deposit)
-        from_cp += wdr_sum     # Aave -> wallet (withdrawal)
-
+    
     return to_cp, from_cp
 
 # ─────────────── aToken daily interest (UNDERLYING-based) ───────────────
