@@ -336,19 +336,31 @@ def get_atoken_interest_range(
             infura_url, underlying_token, wallet, start_blk, end_blk, cp
         )
 
-        # Convert underlying (U_DEC) to balance units (BAL_DEC) so all columns align
+        # Always take DEPOSITS from aToken MINTS (1:1 to underlying at deposit time).
+        # Keep WITHDRAWALS from UNDERLYING flows (burns can diverge from underlying returned).
+        mint_dep_u, _ = _deposits_withdrawals_by_mint_burn(
+            infura_url, token, wallet, start_blk, end_blk
+        )
+
+        # deposits in "underlying units"
+        dep_u = mint_dep_u
+        # withdrawals in "underlying units"
+        wdr_u = from_cp_u
+
+        # Convert underlying units (U_DEC) to balance units (BAL_DEC) to align with balances
         if U_DEC == BAL_DEC:
-            deposits_raw = to_cp_u
-            withdrawals_raw = from_cp_u
+            deposits_raw = dep_u
+            withdrawals_raw = wdr_u
         elif U_DEC > BAL_DEC:
             scale = 10 ** (U_DEC - BAL_DEC)   # scale down
-            deposits_raw = to_cp_u // scale
-            withdrawals_raw = from_cp_u // scale
+            deposits_raw = dep_u // scale
+            withdrawals_raw = wdr_u // scale
         else:
             scale = 10 ** (BAL_DEC - U_DEC)   # scale up
-            deposits_raw = to_cp_u * scale
-            withdrawals_raw = from_cp_u * scale
+            deposits_raw = dep_u * scale
+            withdrawals_raw = wdr_u * scale
 
+        
         net_transfers_raw = withdrawals_raw - deposits_raw
         interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
 
