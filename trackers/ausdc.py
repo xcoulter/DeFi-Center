@@ -254,31 +254,6 @@ def _underlying_flows_wallet_vs_counterparties(
 
     return to_cp, from_cp
 
-def _deposits_withdrawals_by_mint_burn(
-    infura_url: str,
-    atoken: str,
-    wallet: str,
-    start_block: int,
-    end_block: int,
-) -> Tuple[int, int]:
-    wtopic = _addr_topic(wallet)
-    mint_logs = _get_logs_chunked(
-        infura_url, atoken, start_block, end_block,
-        [TRANSFER_SIG, ZERO_ADDR_TOPIC, wtopic]
-    ) or []
-    burn_logs = _get_logs_chunked(
-        infura_url, atoken, start_block, end_block,
-        [TRANSFER_SIG, wtopic, ZERO_ADDR_TOPIC]
-    ) or []
-
-    deposits = 0
-    withdrawals = 0
-    for l in mint_logs:
-        deposits += _int_hex_safe(l.get("data"))
-    for l in burn_logs:
-        withdrawals += _int_hex_safe(l.get("data"))
-    return deposits, withdrawals
-
 
 # ─────────────── aToken daily interest (UNDERLYING-based) ───────────────
 def get_atoken_interest_range(
