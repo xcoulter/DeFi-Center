@@ -309,8 +309,6 @@ with proto_tabs[1]:
         with c2:
             end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
 
-        st.caption("Interest (underlying) = (end_balance − start_balance) + (withdrawals − deposits).")
-
         @st.cache_data(show_spinner=False, ttl=900)
         def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str,
                            rpc_url: str, dec: int, underlying_addr: str, underlying_decimals: int) -> pd.DataFrame:
