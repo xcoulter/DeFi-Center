@@ -243,7 +243,7 @@ def _underlying_flows_wallet_vs_counterparties(
                 frm, to = _topics_to_addresses(l.get("topics"))
                 txh = l.get("transactionHash")
                 if txh and _tx_sender_is_wallet(txh):
-                    if frm == gw and to == AAVE_ETH_V3_POOL:
+                    if frm == gw and to in cps:
                         dep_sum += _int_hex_safe(l.get("data"))
 
             # Pool -> Gateway (withdrawal)
@@ -255,7 +255,7 @@ def _underlying_flows_wallet_vs_counterparties(
                 frm, to = _topics_to_addresses(l.get("topics"))
                 txh = l.get("transactionHash")
                 if txh and _tx_sender_is_wallet(txh):
-                    if frm == AAVE_ETH_V3_POOL and to == gw:
+                    if frm in cps and to == gw:
                         wdr_sum += _int_hex_safe(l.get("data"))
 
         to_cp   += dep_sum     # deposits
