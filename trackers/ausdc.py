@@ -235,19 +235,28 @@ def _underlying_flows_wallet_vs_counterparties(
             except Exception:
                 return False
 
-        # Deposits: WETH goes INTO gateway (to=gateway), initiated by wallet
-        dep_sum = 0
-        for l in logs_to_gw:
-            txh = l.get("transactionHash")
-            if txh and _tx_sender_is_wallet(txh):
-                dep_sum += _int_hex_safe(l.get("data"))
+        # --- aWETH special-case WITHOUT ETH scans ---
+        # Track gateway <-> pool WETH transfers, initiated by the wallet
         
-        # Withdrawals: WETH comes OUT of gateway (from=gateway), initiated by wallet
+        dep_sum = 0
         wdr_sum = 0
+        
         for l in logs_from_gw:
+            frm, to = _topics_to_addresses(l.get("topics"))
             txh = l.get("transactionHash")
             if txh and _tx_sender_is_wallet(txh):
-                wdr_sum += _int_hex_safe(l.get("data"))
+                # Gateway sending WETH out (to pool) = deposit
+                if frm == AAVE_ETH_V3_WETH_GATEWAY_ONLY and to == AAVE_ETH_V3_POOL:
+                    dep_sum += _int_hex_safe(l.get("data"))
+        
+        for l in logs_to_gw:
+            frm, to = _topics_to_addresses(l.get("topics"))
+            txh = l.get("transactionHash")
+            if txh and _tx_sender_is_wallet(txh):
+                # Pool sending WETH back to Gateway = withdrawal
+                if frm == AAVE_ETH_V3_POOL and to == AAVE_ETH_V3_WETH_GATEWAY_ONLY:
+                    wdr_sum += _int_hex_safe(l.get("data"))
+
 
 
         to_cp   += dep_sum     # wallet -> Aave (deposit)
