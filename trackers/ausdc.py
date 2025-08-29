@@ -194,6 +194,7 @@ def _underlying_flows_wallet_vs_counterparties(
     start_block: int,
     end_block: int,
     counterparties: Iterable[str],
+    atoken: Optional[str] = None,    # <-- add this
 ) -> Tuple[int, int]:
     """
     Returns (to_cp_wei, from_cp_wei) in UNDERLYING wei:
@@ -208,27 +209,36 @@ def _underlying_flows_wallet_vs_counterparties(
     from_cp = 0
 
     # Generic ERC-20 transfers wallet <-> counterparties
-    # (skip for WETH: gateway handles movement)
     if underlying_token.lower() != WETH_MAINNET:
         logs_from = _get_logs_chunked(
             infura_url, underlying_token, start_block, end_block,
-            [TRANSFER_SIG, wtopic, None]
+            [TRANSFER_SIG, _addr_topic(wallet), None]
         ) or []
         logs_to = _get_logs_chunked(
             infura_url, underlying_token, start_block, end_block,
-            [TRANSFER_SIG, None, wtopic]
+            [TRANSFER_SIG, None, _addr_topic(wallet)]
         ) or []
-    
-        for l in logs_from:
-            frm, to = _topics_to_addresses(l.get("topics"))
-            if frm == wl and to in cps:
-                to_cp += _int_hex_safe(l.get("data"))
-    
-        for l in logs_to:
-            frm, to = _topics_to_addresses(l.get("topics"))
-            if to == wl and frm in cps:
-                from_cp += _int_hex_safe(l.get("data"))
 
+    # Only count underlying amounts when the SAME TX shows aToken mint/burn for the user
+        for l in logs_from:  # candidate deposits: wallet -> cp
+            frm, to = _topics_to_addresses(l.get("topics"))
+            if frm == wallet.lower() and to in {c.lower() for c in counterparties}:
+                txh = l.get("transactionHash") or ""
+                if atoken:
+                    has_mint, _ = _receipt_has_mint_burn(infura_url, atoken, txh, wallet)
+                    if not has_mint: 
+                        continue  # likely a repay; skip
+                to_cp += _int_hex_safe(l.get("data"))
+
+        for l in logs_to:  # candidate withdrawals: cp -> wallet
+            frm, to = _topics_to_addresses(l.get("topics"))
+            if to == wallet.lower() and frm in {c.lower() for c in counterparties}:
+                txh = l.get("transactionHash") or ""
+                if atoken:
+                    _, has_burn = _receipt_has_mint_burn(infura_url, atoken, txh, wallet)
+                    if not has_burn:
+                        continue  # not a user-initiated withdraw; skip
+                from_cp += _int_hex_safe(l.get("data"))
     # --- aWETH special-case WITHOUT ETH scans ---
     # Track WETH transfers gateway <-> pool, initiated by the wallet (ETH wrapping happens inside gateway).
     if underlying_token.lower() == WETH_MAINNET:
@@ -285,6 +295,28 @@ def _underlying_flows_wallet_vs_counterparties(
     return to_cp, from_cp
 
 # ─────────────── aToken daily interest (UNDERLYING-based) ───────────────
+
+def _receipt_has_mint_burn(infura_url: str, atoken: str, txh: str, wallet: str):
+    """Return (has_mint_to_wallet, has_burn_from_wallet) for the aToken within this tx."""
+    rc = _rpc(infura_url, "eth_getTransactionReceipt", [txh])
+    if not rc or not rc.get("logs"): return False, False
+    atok = atoken.lower()
+    wtopic = _addr_topic(wallet)
+    zero = ZERO_ADDR_TOPIC
+    has_mint = False
+    has_burn = False
+    for lg in rc["logs"]:
+        if (lg.get("address") or "").lower() != atok: 
+            continue
+        tps = lg.get("topics") or []
+        if len(tps) < 3 or (tps[0] or "").lower() != TRANSFER_SIG.lower():
+            continue
+        # Transfer(from=topic1, to=topic2)
+        if tps[1] == zero and tps[2] == wtopic: has_mint = True      # 0x0 -> wallet
+        if tps[1] == wtopic and tps[2] == zero: has_burn = True      # wallet -> 0x0
+        if has_mint and has_burn: break
+    return has_mint, has_burn
+
 def get_atoken_interest_range(
     wallet: str,
     token: str,                     # aToken (e.g., aUSDC, aWETH)
@@ -366,8 +398,10 @@ def get_atoken_interest_range(
 
         # UNDERLYING flows (wallet <-> Aave counterparties)
         to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
-            infura_url, underlying_token, wallet, start_blk, end_blk, cp
+            infura_url, underlying_token, wallet, start_blk, end_blk, cp,
+            atoken=token
         )
+
 
         # ✅ FIX: deposits and withdrawals both from underlying flows
         dep_u = to_cp_u      # wallet -> Aave (deposit)
