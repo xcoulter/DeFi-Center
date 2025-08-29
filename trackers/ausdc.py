@@ -9,17 +9,23 @@ from typing import Optional, Tuple, Iterable, Set
 TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO_ADDR_TOPIC = "0x" + "0" * 64  # 32-byte topic for address(0)
 
-# Ethereum mainnet Aave v3 default counterparties (underlying flows)
+# Use your corrected Aave v3 pool address here:
 AAVE_ETH_V3_POOL = "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8".lower()
+
+# Gateways (both variants)
 AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY = "0xd01607c3C5eCABa394D8be377a08590149325722".lower()
-DEFAULT_AAVE_ETH_V3_COUNTERPARTIES: Set[str] = {
+AAVE_ETH_V3_WETH_GATEWAY_ONLY     = "0xD322A49006FC828F9B5B37Ab215F99B4E5caB19C".lower()
+
+# Underlying WETH token
+WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".lower()
+
+# Default counterparties set (define AFTER the addresses above)
+DEFAULT_AAVE_ETH_V3_COUNTERPARTIES = {
     AAVE_ETH_V3_POOL,
     AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY,
-    AAVE_ETH_V3_WETH_GATEWAY_ONLY
+    AAVE_ETH_V3_WETH_GATEWAY_ONLY,
 }
-# aWETH-specific override
-AAVE_ETH_V3_WETH_GATEWAY_ONLY = "0xD322A49006FC828F9B5B37Ab215F99B4E5caB19C".lower()
-WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".lower()
+
 
 # ───────────────────────────── Utils ─────────────────────────────
 def _int_hex_safe(x: Optional[str]) -> int:
