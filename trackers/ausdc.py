@@ -15,6 +15,7 @@ AAVE_ETH_V3_POOL = "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8".lower()
 # Gateways (both variants)
 AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY = "0xd01607c3C5eCABa394D8be377a08590149325722".lower()
 AAVE_ETH_V3_WETH_GATEWAY_ONLY     = "0xD322A49006FC828F9B5B37Ab215F99B4E5caB19C".lower()
+AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH = "0x893411580e590D62dDBca8a703d61Cc4A8c7b2b9".lower()
 
 # Underlying WETH token
 WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".lower()
@@ -24,6 +25,7 @@ DEFAULT_AAVE_ETH_V3_COUNTERPARTIES = {
     AAVE_ETH_V3_POOL,
     AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY,
     AAVE_ETH_V3_WETH_GATEWAY_ONLY,
+    AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH,
 }
 
 
@@ -228,7 +230,11 @@ def _underlying_flows_wallet_vs_counterparties(
     # --- aWETH special-case WITHOUT ETH scans ---
     # Track WETH transfers gateway <-> pool, initiated by the wallet (ETH wrapping happens inside gateway).
     if underlying_token.lower() == WETH_MAINNET:
-        GATEWAYS = [AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY, AAVE_ETH_V3_WETH_GATEWAY_ONLY]
+        GATEWAYS = [
+            AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY,
+            AAVE_ETH_V3_WETH_GATEWAY_ONLY,
+            AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH,   # <-- add this
+        ]
 
         def _tx_sender_is_wallet(txh: str) -> bool:
             try:
