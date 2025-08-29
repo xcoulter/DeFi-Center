@@ -273,8 +273,6 @@ def get_atoken_interest_range(
       - aToken.balanceOf for start/end (already underlying-equivalent)
       - UNDERLYING ERC-20 transfers wallet<->Aave for deposits/withdrawals
 
-    Continuous windows: for every row after the first, start_block == previous end_block
-
     interest = (end_balance - start_balance) + (withdrawals - deposits)
     """
     infura_url = (infura_url or os.getenv("INFURA_URL","")).strip()
@@ -336,10 +334,9 @@ def get_atoken_interest_range(
             infura_url, underlying_token, wallet, start_blk, end_blk, cp
         )
 
-        # Take BOTH deposits and withdrawals from UNDERLYING flows
+        # ✅ FIX: deposits and withdrawals both from underlying flows
         dep_u = to_cp_u      # wallet -> Aave (deposit)
         wdr_u = from_cp_u    # Aave -> wallet (withdrawal)
-
 
         # Convert underlying units (U_DEC) to balance units (BAL_DEC) to align with balances
         if U_DEC == BAL_DEC:
@@ -354,7 +351,6 @@ def get_atoken_interest_range(
             deposits_raw = dep_u * scale
             withdrawals_raw = wdr_u * scale
 
-        
         net_transfers_raw = withdrawals_raw - deposits_raw
         interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
 
