@@ -320,6 +320,9 @@ def get_atoken_interest_range(
     if include_default_aave_eth_v3:
         cp |= DEFAULT_AAVE_ETH_V3_COUNTERPARTIES
         
+    cp.add(token.lower())   # ensure the aToken/pool itself is always included
+
+        
     # ---- aWETH: include both Pool and the specific WETH Gateway ----
     if (underlying_token or "").lower() == WETH_MAINNET:
         cp |= {AAVE_ETH_V3_WETH_GATEWAY_ONLY}
