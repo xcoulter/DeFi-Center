@@ -235,6 +235,7 @@ def _underlying_flows_wallet_vs_counterparties(
             AAVE_ETH_V3_WETH_GATEWAY_ONLY,
             AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH,   # <-- add this
         ]
+        GATEWAYS = [g.lower() for g in GATEWAYS]
 
         def _tx_sender_is_wallet(txh: str) -> bool:
             try:
