@@ -193,7 +193,9 @@ def _underlying_flows_wallet_vs_counterparties(
     """
     wtopic = _addr_topic(wallet)
     cps = {c.lower() for c in counterparties}
+    wl = wallet.lower()
 
+    # Generic ERC-20 transfers wallet <-> counterparties
     logs_from = _get_logs_chunked(
         infura_url, underlying_token, start_block, end_block,
         [TRANSFER_SIG, wtopic, None]
@@ -205,9 +207,7 @@ def _underlying_flows_wallet_vs_counterparties(
 
     to_cp = 0
     from_cp = 0
-    wl = wallet.lower()
 
-    # ERC-20 transfer logs (generic path)
     for l in logs_from:
         frm, to = _topics_to_addresses(l.get("topics"))
         if frm == wl and to in cps:
@@ -219,14 +219,9 @@ def _underlying_flows_wallet_vs_counterparties(
             from_cp += _int_hex_safe(l.get("data"))
 
     # --- aWETH special-case WITHOUT ETH scans ---
-    # Count WETH transfers that involve the WETH Gateway, but ONLY when the tx sender is the wallet.
+    # Track WETH transfers gateway <-> pool, initiated by the wallet (ETH wrapping happens inside gateway).
     if underlying_token.lower() == WETH_MAINNET:
-        # topics for WETH Transfer involving the gateway
-        t_from_gateway_any = [TRANSFER_SIG, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY), None]
-        t_to_gateway_any   = [TRANSFER_SIG, None, _addr_topic(AAVE_ETH_V3_WETH_GATEWAY_ONLY)]
-
-        logs_from_gw = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_from_gateway_any) or []
-        logs_to_gw   = _get_logs_chunked(infura_url, WETH_MAINNET, start_block, end_block, t_to_gateway_any) or []
+        GATEWAYS = [AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY, AAVE_ETH_V3_WETH_GATEWAY_ONLY]
 
         def _tx_sender_is_wallet(txh: str) -> bool:
             try:
@@ -235,35 +230,38 @@ def _underlying_flows_wallet_vs_counterparties(
             except Exception:
                 return False
 
-        # --- aWETH special-case WITHOUT ETH scans ---
-        # Track gateway <-> pool WETH transfers, initiated by the wallet
-        
-        dep_sum = 0
-        wdr_sum = 0
-        
-        for l in logs_from_gw:
-            frm, to = _topics_to_addresses(l.get("topics"))
-            txh = l.get("transactionHash")
-            if txh and _tx_sender_is_wallet(txh):
-                # Gateway sending WETH out (to pool) = deposit
-                if frm == AAVE_ETH_V3_WETH_GATEWAY_ONLY and to == AAVE_ETH_V3_POOL:
-                    dep_sum += _int_hex_safe(l.get("data"))
-        
-        for l in logs_to_gw:
-            frm, to = _topics_to_addresses(l.get("topics"))
-            txh = l.get("transactionHash")
-            if txh and _tx_sender_is_wallet(txh):
-                # Pool sending WETH back to Gateway = withdrawal
-                if frm == AAVE_ETH_V3_POOL and to == AAVE_ETH_V3_WETH_GATEWAY_ONLY:
-                    wdr_sum += _int_hex_safe(l.get("data"))
+        dep_sum = 0  # wallet deposits -> gateway sends WETH to pool
+        wdr_sum = 0  # wallet withdrawals -> pool sends WETH to gateway
 
+        for gw in GATEWAYS:
+            # Gateway -> Pool (deposit)
+            logs_from_gw = _get_logs_chunked(
+                infura_url, WETH_MAINNET, start_block, end_block,
+                [TRANSFER_SIG, _addr_topic(gw), None]
+            ) or []
+            for l in logs_from_gw:
+                frm, to = _topics_to_addresses(l.get("topics"))
+                txh = l.get("transactionHash")
+                if txh and _tx_sender_is_wallet(txh):
+                    if frm == gw and to == AAVE_ETH_V3_POOL:
+                        dep_sum += _int_hex_safe(l.get("data"))
 
+            # Pool -> Gateway (withdrawal)
+            logs_to_gw = _get_logs_chunked(
+                infura_url, WETH_MAINNET, start_block, end_block,
+                [TRANSFER_SIG, None, _addr_topic(gw)]
+            ) or []
+            for l in logs_to_gw:
+                frm, to = _topics_to_addresses(l.get("topics"))
+                txh = l.get("transactionHash")
+                if txh and _tx_sender_is_wallet(txh):
+                    if frm == AAVE_ETH_V3_POOL and to == gw:
+                        wdr_sum += _int_hex_safe(l.get("data"))
 
-        to_cp   += dep_sum     # wallet -> Aave (deposit)
-        from_cp += wdr_sum     # Aave -> wallet (withdrawal)
+        to_cp   += dep_sum     # deposits
+        from_cp += wdr_sum     # withdrawals
 
     return to_cp, from_cp
-
 
 # ─────────────── aToken daily interest (UNDERLYING-based) ───────────────
 def get_atoken_interest_range(
