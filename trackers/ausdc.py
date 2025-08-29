@@ -336,16 +336,10 @@ def get_atoken_interest_range(
             infura_url, underlying_token, wallet, start_blk, end_blk, cp
         )
 
-        # Always take DEPOSITS from aToken MINTS (1:1 to underlying at deposit time).
-        # Keep WITHDRAWALS from UNDERLYING flows (burns can diverge from underlying returned).
-        mint_dep_u, _ = _deposits_withdrawals_by_mint_burn(
-            infura_url, token, wallet, start_blk, end_blk
-        )
+        # Take BOTH deposits and withdrawals from UNDERLYING flows
+        dep_u = to_cp_u      # wallet -> Aave (deposit)
+        wdr_u = from_cp_u    # Aave -> wallet (withdrawal)
 
-        # deposits in "underlying units"
-        dep_u = mint_dep_u
-        # withdrawals in "underlying units"
-        wdr_u = from_cp_u
 
         # Convert underlying units (U_DEC) to balance units (BAL_DEC) to align with balances
         if U_DEC == BAL_DEC:
