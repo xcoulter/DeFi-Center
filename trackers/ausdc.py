@@ -247,40 +247,27 @@ def _underlying_flows_wallet_vs_counterparties(
         dep_sum = 0  # wallet deposits -> gateway sends WETH to pool
         wdr_sum = 0  # wallet withdrawals -> pool sends WETH to gateway
 
+        # Narrow, indexed queries: (gw -> pool) and (pool -> gw), per pair
         for gw in GATEWAYS:
-            # Gateway -> Pool (deposit)
-            logs_from_gw = _get_logs_chunked(
+            # Deposit: gateway -> pool (topic[1]=from, topic[2]=to)
+            logs_dep = _get_logs_chunked(
                 infura_url, WETH_MAINNET, start_block, end_block,
-                [TRANSFER_SIG, _addr_topic(gw), None]
+                [TRANSFER_SIG, _addr_topic(gw), _addr_topic(AAVE_ETH_V3_POOL)]
             ) or []
-            for l in logs_from_gw:
-                frm, to = _topics_to_addresses(l.get("topics"))
-                frm = (frm or "").lower(); to = (to or "").lower()
+            for l in logs_dep:
                 txh = l.get("transactionHash")
                 if txh and _tx_sender_is_wallet(txh):
-                    if frm == gw and to in cps:            # <- cps is already lower()
-                        dep_sum += _int_hex_safe(l.get("data"))
-        
-            # Pool -> Gateway (withdrawal)
-            logs_to_gw = _get_logs_chunked(
+                    dep_sum += _int_hex_safe(l.get("data"))
+
+            # Withdrawal: pool -> gateway
+            logs_wdr = _get_logs_chunked(
                 infura_url, WETH_MAINNET, start_block, end_block,
-                [TRANSFER_SIG, None, _addr_topic(gw)]
+                [TRANSFER_SIG, _addr_topic(AAVE_ETH_V3_POOL), _addr_topic(gw)]
             ) or []
-            for l in logs_to_gw:
-                frm, to = _topics_to_addresses(l.get("topics"))
-                frm = (frm or "").lower(); to = (to or "").lower()
+            for l in logs_wdr:
                 txh = l.get("transactionHash")
                 if txh and _tx_sender_is_wallet(txh):
-                    if frm in cps and to == gw:
-                        wdr_sum += _int_hex_safe(l.get("data"))
-
-        print("aWETH debug:",
-              "dep_sum", dep_sum,
-              "wdr_sum", wdr_sum,
-              "logs_from_gw", len(logs_from_gw),
-              "logs_to_gw", len(logs_to_gw),
-              "blocks", start_block, end_block)
-
+                    wdr_sum += _int_hex_safe(l.get("data"))
         
         to_cp   += dep_sum     # deposits
         from_cp += wdr_sum     # withdrawals
