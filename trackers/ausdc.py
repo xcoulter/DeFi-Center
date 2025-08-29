@@ -112,10 +112,10 @@ def _balance_of(infura_url: str, token: str, wallet: str, block_num: int) -> int
 
 # ───────────────────────────── Logs ─────────────────────────────
 def _get_logs_chunked(infura_url: str, token: str, start_block: int, end_block: int, topics,
-                      stop_at_first: bool = False, chunk_size: int = 50_000):
+                      stop_at_first: bool = False, chunk_size: int = 200_000):
     out = []
     b = start_block
-    INTER_CHUNK_SLEEP = 0.25
+    INTER_CHUNK_SLEEP = 0.05
     while b <= end_block:
         e = min(end_block, b + chunk_size - 1)
         params = [{
@@ -204,28 +204,30 @@ def _underlying_flows_wallet_vs_counterparties(
     cps = {c.lower() for c in counterparties}
     wl = wallet.lower()
 
-    # Generic ERC-20 transfers wallet <-> counterparties
-    logs_from = _get_logs_chunked(
-        infura_url, underlying_token, start_block, end_block,
-        [TRANSFER_SIG, wtopic, None]
-    ) or []
-    logs_to = _get_logs_chunked(
-        infura_url, underlying_token, start_block, end_block,
-        [TRANSFER_SIG, None, wtopic]
-    ) or []
-
     to_cp = 0
     from_cp = 0
 
-    for l in logs_from:
-        frm, to = _topics_to_addresses(l.get("topics"))
-        if frm == wl and to in cps:
-            to_cp += _int_hex_safe(l.get("data"))
-
-    for l in logs_to:
-        frm, to = _topics_to_addresses(l.get("topics"))
-        if to == wl and frm in cps:
-            from_cp += _int_hex_safe(l.get("data"))
+    # Generic ERC-20 transfers wallet <-> counterparties
+    # (skip for WETH: gateway handles movement)
+    if underlying_token.lower() != WETH_MAINNET:
+        logs_from = _get_logs_chunked(
+            infura_url, underlying_token, start_block, end_block,
+            [TRANSFER_SIG, wtopic, None]
+        ) or []
+        logs_to = _get_logs_chunked(
+            infura_url, underlying_token, start_block, end_block,
+            [TRANSFER_SIG, None, wtopic]
+        ) or []
+    
+        for l in logs_from:
+            frm, to = _topics_to_addresses(l.get("topics"))
+            if frm == wl and to in cps:
+                to_cp += _int_hex_safe(l.get("data"))
+    
+        for l in logs_to:
+            frm, to = _topics_to_addresses(l.get("topics"))
+            if to == wl and frm in cps:
+                from_cp += _int_hex_safe(l.get("data"))
 
     # --- aWETH special-case WITHOUT ETH scans ---
     # Track WETH transfers gateway <-> pool, initiated by the wallet (ETH wrapping happens inside gateway).
@@ -238,11 +240,19 @@ def _underlying_flows_wallet_vs_counterparties(
         GATEWAYS = [g.lower() for g in GATEWAYS]
 
         def _tx_sender_is_wallet(txh: str) -> bool:
+            txh = (txh or "").lower()
+            if txh in tx_sender_cache:
+                return tx_sender_cache[txh]
             try:
                 tx = _rpc(infura_url, "eth_getTransactionByHash", [txh])
-                return (tx and (tx.get("from") or "").lower() == wl)
+                frm = (tx.get("from") or "").lower()
+                ok = (frm == wl)
+                tx_sender_cache[txh] = ok
+                return ok
             except Exception:
+                tx_sender_cache[txh] = False
                 return False
+
 
         dep_sum = 0  # wallet deposits -> gateway sends WETH to pool
         wdr_sum = 0  # wallet withdrawals -> pool sends WETH to gateway
