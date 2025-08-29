@@ -267,6 +267,14 @@ def _underlying_flows_wallet_vs_counterparties(
                     if frm in cps and to == gw:
                         wdr_sum += _int_hex_safe(l.get("data"))
 
+        print("aWETH debug:",
+              "dep_sum", dep_sum,
+              "wdr_sum", wdr_sum,
+              "logs_from_gw", len(logs_from_gw),
+              "logs_to_gw", len(logs_to_gw),
+              "blocks", start_block, end_block)
+
+        
         to_cp   += dep_sum     # deposits
         from_cp += wdr_sum     # withdrawals
 
