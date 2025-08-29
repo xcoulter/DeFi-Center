@@ -248,11 +248,12 @@ def _underlying_flows_wallet_vs_counterparties(
             ) or []
             for l in logs_from_gw:
                 frm, to = _topics_to_addresses(l.get("topics"))
+                frm = (frm or "").lower(); to = (to or "").lower()
                 txh = l.get("transactionHash")
                 if txh and _tx_sender_is_wallet(txh):
-                    if frm == gw and to in cps:
+                    if frm == gw and to in cps:            # <- cps is already lower()
                         dep_sum += _int_hex_safe(l.get("data"))
-
+        
             # Pool -> Gateway (withdrawal)
             logs_to_gw = _get_logs_chunked(
                 infura_url, WETH_MAINNET, start_block, end_block,
@@ -260,6 +261,7 @@ def _underlying_flows_wallet_vs_counterparties(
             ) or []
             for l in logs_to_gw:
                 frm, to = _topics_to_addresses(l.get("topics"))
+                frm = (frm or "").lower(); to = (to or "").lower()
                 txh = l.get("transactionHash")
                 if txh and _tx_sender_is_wallet(txh):
                     if frm in cps and to == gw:
