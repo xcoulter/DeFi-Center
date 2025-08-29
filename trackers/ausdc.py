@@ -235,19 +235,20 @@ def _underlying_flows_wallet_vs_counterparties(
             except Exception:
                 return False
 
-        # Deposits: WETH leaves gateway (from=gateway → any), initiated by wallet
+        # Deposits: WETH goes INTO gateway (to=gateway), initiated by wallet
         dep_sum = 0
-        for l in logs_from_gw:
-            txh = l.get("transactionHash")
-            if txh and _tx_sender_is_wallet(txh):
-                dep_sum += _int_hex_safe(l.get("data"))
-
-        # Withdrawals: WETH enters gateway (to=gateway ← any), initiated by wallet
-        wdr_sum = 0
         for l in logs_to_gw:
             txh = l.get("transactionHash")
             if txh and _tx_sender_is_wallet(txh):
+                dep_sum += _int_hex_safe(l.get("data"))
+        
+        # Withdrawals: WETH comes OUT of gateway (from=gateway), initiated by wallet
+        wdr_sum = 0
+        for l in logs_from_gw:
+            txh = l.get("transactionHash")
+            if txh and _tx_sender_is_wallet(txh):
                 wdr_sum += _int_hex_safe(l.get("data"))
+
 
         to_cp   += dep_sum     # wallet -> Aave (deposit)
         from_cp += wdr_sum     # Aave -> wallet (withdrawal)
