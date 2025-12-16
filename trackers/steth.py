@@ -147,10 +147,13 @@ def _iterate_days(start_dt: date, end_dt: date):
 
 # ---------------- Public API ----------------
 
-def get_steth_rebases_range(wallet: str, start_iso: str, end_iso: str, infura_url: str | None = None) -> pd.DataFrame:
+def get_steth_rebases_range(wallet: str, start_iso: str, end_iso: str, infura_url: str | None = None, single_period: bool = False) -> pd.DataFrame:
     """
-    Compute daily stETH rebases for [start_iso, end_iso] inclusive (UTC dates, 'YYYY-MM-DD').
+    Compute stETH rebases for [start_iso, end_iso] inclusive (UTC dates, 'YYYY-MM-DD').
     Math: rebase = (end_bal - start_bal) - (sum_in - sum_out)
+    
+    Args:
+        single_period: If True, calculate as one period instead of day-by-day (much faster for long ranges)
     """
     infura_url = (infura_url or os.getenv("INFURA_URL", "")).strip()
     if not infura_url:
@@ -164,6 +167,41 @@ def get_steth_rebases_range(wallet: str, start_iso: str, end_iso: str, infura_ur
     latest = _latest_block(infura_url)
     latest_ts = int(_rpc(infura_url, "eth_getBlockByNumber", [hex(latest), False])["timestamp"], 16)
 
+    # Single period mode: calculate once for the entire range (much faster)
+    if single_period or start_dt == end_dt:
+        start_ts = int(datetime(start_dt.year, start_dt.month, start_dt.day, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+        end_ts   = int(datetime(end_dt.year, end_dt.month, end_dt.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+        
+        if start_ts > latest_ts:
+            return pd.DataFrame([])
+        if end_ts > latest_ts:
+            end_ts = latest_ts
+
+        start_blk = _block_by_time(infura_url, start_ts, "after")
+        end_blk   = _block_by_time(infura_url, end_ts,   "before")
+        if end_blk < start_blk:
+            end_blk = start_blk
+
+        start_bal = _balance_of(infura_url, wallet, start_blk)
+        end_bal   = _balance_of(infura_url, wallet, end_blk)
+        in_wei, out_wei = _sum_transfers(infura_url, wallet, start_blk, end_blk)
+
+        net_wei    = in_wei - out_wei
+        rebase_wei = (end_bal - start_bal) - net_wei
+
+        return pd.DataFrame([{
+            "date": start_dt.isoformat() if start_dt == end_dt else f"{start_dt.isoformat()} to {end_dt.isoformat()}",
+            "start_block": start_blk,
+            "end_block": end_blk,
+            "start_balance_steth": start_bal / WEI_PER_STETH,
+            "end_balance_steth":   end_bal   / WEI_PER_STETH,
+            "transfers_in_steth":  in_wei    / WEI_PER_STETH,
+            "transfers_out_steth": out_wei   / WEI_PER_STETH,
+            "net_transfers_steth": net_wei   / WEI_PER_STETH,
+            "daily_rebase_reward_steth": rebase_wei / WEI_PER_STETH,
+        }])
+
+    # Day-by-day mode: original behavior for daily calculations
     rows = []
     for d in _iterate_days(start_dt, end_dt):
         # UTC day bounds
