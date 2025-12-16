@@ -18,17 +18,39 @@ st.title("💸 DeFi Center")
 # ---- Provider secret/env (no network at import) ----
 INFURA_URL = st.secrets.get("INFURA_URL", os.getenv("INFURA_URL", "")).strip()
 if not INFURA_URL:
-    st.warning("Set INFURA_URL in Streamlit Secrets or env. Example: https://mainnet.infura.io/v3/<KEY>")
+    st.warning("⚠️ Set INFURA_URL in Streamlit Secrets or env. Example: https://mainnet.infura.io/v3/<KEY>")
+
+# ---- Helper Functions ----
+def validate_ethereum_address(address: str) -> bool:
+    """Validate Ethereum address format"""
+    if not address:
+        return False
+    if not address.startswith('0x'):
+        return False
+    if len(address) != 42:
+        return False
+    try:
+        int(address, 16)
+        return True
+    except ValueError:
+        return False
 
 # ---- Global inputs (shared across tabs) ----
 with st.container():
-    wallet = st.text_input("Wallet address (0x…)", help="Checksum or lowercase is fine", key="wallet_input")
+    wallet = st.text_input("Wallet address (0x…)", help="Enter a valid Ethereum address (42 characters starting with 0x)", key="wallet_input")
+    if wallet and not validate_ethereum_address(wallet):
+        st.error("❌ Invalid Ethereum address format. Must be 42 characters starting with 0x.")
+        wallet = None  # Prevent processing with invalid address
 
 # ---- Session state ----
 if "steth_accum" not in st.session_state:
     st.session_state["steth_accum"] = pd.DataFrame()
 if "steth_first_activity" not in st.session_state:
     st.session_state["steth_first_activity"] = None
+if "steth_processing" not in st.session_state:
+    st.session_state["steth_processing"] = False
+if "steth_errors" not in st.session_state:
+    st.session_state["steth_errors"] = []
 
 # =========================
 #      PROTOCOL TABS
@@ -49,19 +71,20 @@ with proto_tabs[0]:
         with c1:
             stream_rows = st.toggle("Stream rows live", value=True, help="Update UI after each day finishes")
         with c2:
-            if st.button("Find first stETH activity"):
+            if st.button("Find first stETH activity", disabled=st.session_state.get("steth_processing", False)):
                 if not wallet or not INFURA_URL:
-                    st.error("Enter a wallet and ensure INFURA_URL is set.")
+                    st.error("⚠️ Please enter a valid wallet address and ensure INFURA_URL is set.")
                 else:
-                    try:
-                        fa = get_first_activity_date(wallet, INFURA_URL)
-                        st.session_state["steth_first_activity"] = fa
-                        if fa is None:
-                            st.info("No stETH activity found for this wallet.")
-                        else:
-                            st.success(f"First activity (UTC): {fa.isoformat()}")
-                    except Exception as e:
-                        st.error(f"Failed to locate first activity: {e}")
+                    with st.spinner("🔍 Searching for first stETH activity..."):
+                        try:
+                            fa = get_first_activity_date(wallet, INFURA_URL)
+                            st.session_state["steth_first_activity"] = fa
+                            if fa is None:
+                                st.info("ℹ️ No stETH activity found for this wallet.")
+                            else:
+                                st.success(f"✅ First activity (UTC): {fa.isoformat()}")
+                        except Exception as e:
+                            st.error(f"❌ Failed to locate first activity: {e}")
         with c3:
             st.caption("Tip: Run multiple adjacent windows (≤ 180 days). Results accumulate below and can be downloaded as one CSV.")
 
@@ -87,7 +110,9 @@ with proto_tabs[0]:
         with r1:
             start_dt = st.date_input("Start date (UTC)", value=suggested_start, max_value=yday, key="steth_start")
         with r2:
-            end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="steth_end")
+            # Ensure suggested_end is at least start_dt to avoid validation error
+            safe_suggested_end = max(suggested_end, start_dt)
+            end_dt = st.date_input("End date (UTC)", value=safe_suggested_end, min_value=start_dt, max_value=yday, key="steth_end")
 
         @st.cache_data(show_spinner=False, ttl=900)
         def _cached_range(wallet_addr: str, start_iso: str, end_iso: str, rpc_url: str) -> pd.DataFrame:
@@ -95,13 +120,14 @@ with proto_tabs[0]:
 
         a1, a2, a3 = st.columns([1, 1, 1])
         with a1:
-            run = st.button("Compute this range", key="run_range")
+            run = st.button("Compute this range", key="run_range", disabled=st.session_state.get("steth_processing", False))
         with a2:
-            run_next = st.button("Compute next window", key="run_next")
+            run_next = st.button("Compute next window", key="run_next", disabled=st.session_state.get("steth_processing", False))
         with a3:
-            if st.button("Clear accumulated results", key="clear_accum"):
+            if st.button("Clear accumulated results", key="clear_accum", disabled=st.session_state.get("steth_processing", False)):
                 st.session_state["steth_accum"] = pd.DataFrame()
-                st.success("Cleared.")
+                st.session_state["steth_errors"] = []
+                st.success("✅ Cleared accumulated results and errors.")
                 accum = st.session_state["steth_accum"]
 
         if run_next:
@@ -112,12 +138,16 @@ with proto_tabs[0]:
 
         def run_window_and_stream(start_dt: date, end_dt: date):
             total_days = (end_dt - start_dt).days + 1
-            if total_days <= 0: st.info("Empty window."); return
-            if total_days > 180: st.error(f"Window too large: {total_days} days. Please run ≤ 180 days per call."); return
+            if total_days <= 0: st.info("ℹ️ Empty window."); return
+            if total_days > 180: st.error(f"❌ Window too large: {total_days} days. Please run ≤ 180 days per call."); return
 
+            # Set processing flag
+            st.session_state["steth_processing"] = True
+            
             table_ph = st.empty()
             status_ph = st.empty()
             prog = st.progress(0, text="Starting…")
+            errors_this_run = []
 
             if stream_rows:
                 done = 0; cur = start_dt
@@ -125,7 +155,14 @@ with proto_tabs[0]:
                     try:
                         df_day = _cached_range(wallet, cur.isoformat(), cur.isoformat(), INFURA_URL)
                     except Exception as e:
-                        prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
+                        error_msg = f"Failed on {cur}: {str(e)}"
+                        errors_this_run.append({"date": cur.isoformat(), "error": str(e)})
+                        status_ph.warning(f"⚠️ {error_msg} (continuing...)")
+                        done += 1
+                        prog.progress(min(int(done / total_days * 100), 100),
+                                      text=f"Processed {done}/{total_days} day(s)… ({len(errors_this_run)} errors)")
+                        cur = cur + timedelta(days=1)
+                        continue
 
                     if df_day is not None and not df_day.empty:
                         acc = st.session_state["steth_accum"]
@@ -136,7 +173,7 @@ with proto_tabs[0]:
                         st.session_state["steth_accum"] = acc
 
                         table_ph.dataframe(acc, use_container_width=True)
-                        status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
+                        status_ph.info(f"✅ Fetched {cur} ({len(df_day)} row)")
 
                     done += 1
                     prog.progress(min(int(done / total_days * 100), 100),
@@ -144,7 +181,12 @@ with proto_tabs[0]:
                     cur = cur + timedelta(days=1)
 
                 prog.empty()
-                status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+                if errors_this_run:
+                    st.session_state["steth_errors"].extend(errors_this_run)
+                    status_ph.warning(f"⚠️ Completed with {len(errors_this_run)} errors. Window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+                else:
+                    status_ph.success(f"✅ Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+                st.session_state["steth_processing"] = False
                 return
 
             # slice mode
@@ -156,7 +198,14 @@ with proto_tabs[0]:
                 try:
                     df_slice = _cached_range(wallet, cur_start.isoformat(), cur_end.isoformat(), INFURA_URL)
                 except Exception as e:
-                    prog.empty(); status_ph.error(f"Failed on slice {cur_start} → {cur_end}: {e}"); return
+                    error_msg = f"Failed on slice {cur_start} → {cur_end}: {str(e)}"
+                    errors_this_run.append({"date_range": f"{cur_start} → {cur_end}", "error": str(e)})
+                    status_ph.warning(f"⚠️ {error_msg} (continuing...)")
+                    done += (cur_end - cur_start).days + 1
+                    prog.progress(min(int(done / total_days * 100), 100),
+                                  text=f"Processed {done}/{total_days} day(s)… ({len(errors_this_run)} errors)")
+                    cur_start = cur_end + timedelta(days=1)
+                    continue
 
                 if df_slice is not None and not df_slice.empty:
                     acc = st.session_state["steth_accum"]
@@ -173,26 +222,46 @@ with proto_tabs[0]:
                 cur_start = cur_end + timedelta(days=1)
 
             prog.empty()
-            status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+            if errors_this_run:
+                st.session_state["steth_errors"].extend(errors_this_run)
+                status_ph.warning(f"⚠️ Completed with {len(errors_this_run)} errors. Window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+            else:
+                status_ph.success(f"✅ Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['steth_accum'])}")
+            st.session_state["steth_processing"] = False
 
         if run:
             if not wallet or not INFURA_URL:
-                st.error("Please enter a wallet and ensure INFURA_URL is set.")
+                st.error("⚠️ Please enter a valid wallet address and ensure INFURA_URL is set.")
             else:
                 run_window_and_stream(start_dt, end_dt)
 
         accum = st.session_state["steth_accum"]
         st.markdown("### Accumulated results")
         if not accum.empty:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.metric("Total Days", len(accum))
+            with col2:
+                if "daily_rebase_reward_steth" in accum.columns:
+                    total_rewards = accum["daily_rebase_reward_steth"].sum()
+                    st.metric("Total Rewards (stETH)", f"{total_rewards:.6f}")
+            
             st.dataframe(accum, use_container_width=True)
             st.download_button(
-                "Download accumulated CSV",
+                "📥 Download accumulated CSV",
                 accum.to_csv(index=False),
                 file_name="steth_rebases_accumulated.csv",
                 mime="text/csv",
             )
         else:
-            st.info("No results yet. Choose a date window and click **Compute this range**.")
+            st.info("ℹ️ No results yet. Choose a date window and click **Compute this range**.")
+        
+        # Show errors if any
+        if st.session_state.get("steth_errors"):
+            with st.expander(f"⚠️ Errors ({len(st.session_state['steth_errors'])})", expanded=False):
+                st.warning("Some days failed to process. You may want to retry these dates.")
+                errors_df = pd.DataFrame(st.session_state["steth_errors"])
+                st.dataframe(errors_df, use_container_width=True)
 
 # ======================================================
 #                        AAVE
@@ -269,20 +338,25 @@ with proto_tabs[1]:
             st.session_state["atoken_accum"] = pd.DataFrame()
         if "atoken_first_activity" not in st.session_state:
             st.session_state["atoken_first_activity"] = None
+        if "atoken_processing" not in st.session_state:
+            st.session_state["atoken_processing"] = False
+        if "atoken_errors" not in st.session_state:
+            st.session_state["atoken_errors"] = []
 
-        if st.button("Find first activity for selected aToken"):
+        if st.button("Find first activity for selected aToken", disabled=st.session_state.get("atoken_processing", False)):
             if not wallet or not INFURA_URL:
-                st.error("Enter wallet + INFURA_URL.")
+                st.error("⚠️ Please enter a valid wallet address and ensure INFURA_URL is set.")
             else:
-                try:
-                    fa = get_first_activity_date_atoken(wallet, atoken_addr, INFURA_URL)
-                    st.session_state["atoken_first_activity"] = fa
-                    if fa is None:
-                        st.info("No activity found for this aToken.")
-                    else:
-                        st.success(f"First activity (UTC): {fa.isoformat()}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                with st.spinner("🔍 Searching for first aToken activity..."):
+                    try:
+                        fa = get_first_activity_date_atoken(wallet, atoken_addr, INFURA_URL)
+                        st.session_state["atoken_first_activity"] = fa
+                        if fa is None:
+                            st.info("ℹ️ No activity found for this aToken.")
+                        else:
+                            st.success(f"✅ First activity (UTC): {fa.isoformat()}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
 
         # Date range
         today = date.today()
@@ -307,7 +381,11 @@ with proto_tabs[1]:
         with c1:
             start_dt = st.date_input("Start date (UTC)", value=suggested_start, max_value=yday, key="atoken_start")
         with c2:
-            end_dt = st.date_input("End date (UTC)", value=suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
+            # Ensure suggested_end is at least start_dt to avoid validation error
+            safe_suggested_end = max(suggested_end, start_dt)
+            end_dt = st.date_input("End date (UTC)", value=safe_suggested_end, min_value=start_dt, max_value=yday, key="atoken_end")
+
+        st.caption("Interest (underlying) = (end_balance − start_balance) + (withdrawals − deposits).")
 
         @st.cache_data(show_spinner=False, ttl=900)
         def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str,
@@ -316,20 +394,21 @@ with proto_tabs[1]:
                 wallet_addr, token, start_iso, end_iso,
                 infura_url=rpc_url,
                 decimals=dec,
-                underlying_token=underlying_addr,           # now required
-                underlying_decimals=underlying_decimals,    # now required
+                underlying_token=underlying_addr,
+                underlying_decimals=underlying_decimals,
                 include_default_aave_eth_v3=True,
             )
 
         a1, a2, a3 = st.columns([1, 1, 1])
         with a1:
-            run = st.button("Compute this range", key="run_atoken_range")
+            run = st.button("Compute this range", key="run_atoken_range", disabled=st.session_state.get("atoken_processing", False))
         with a2:
-            run_next = st.button("Compute next window", key="run_atoken_next")
+            run_next = st.button("Compute next window", key="run_atoken_next", disabled=st.session_state.get("atoken_processing", False))
         with a3:
-            if st.button("Clear accumulated results", key="clear_atoken_accum"):
+            if st.button("Clear accumulated results", key="clear_atoken_accum", disabled=st.session_state.get("atoken_processing", False)):
                 st.session_state["atoken_accum"] = pd.DataFrame()
-                st.success("Cleared.")
+                st.session_state["atoken_errors"] = []
+                st.success("✅ Cleared accumulated results and errors.")
                 accum = st.session_state["atoken_accum"]
 
         if run_next:
@@ -340,17 +419,21 @@ with proto_tabs[1]:
 
         def run_window_and_stream_atoken(start_dt: date, end_dt: date):
             total_days = (end_dt - start_dt).days + 1
-            if total_days <= 0: st.info("Empty window."); return
-            if total_days > 180: st.error(f"Window too large: {total_days} days. Please run ≤ 180 days."); return
+            if total_days <= 0: st.info("ℹ️ Empty window."); return
+            if total_days > 180: st.error(f"❌ Window too large: {total_days} days. Please run ≤ 180 days."); return
 
+            # Set processing flag
+            st.session_state["atoken_processing"] = True
+            
             table_ph = st.empty()
             status_ph = st.empty()
             prog = st.progress(0, text="Starting…")
+            errors_this_run = []
 
             # pull underlying metadata once per run
             active_now = st.session_state["aave_my_tokens"][active_label]
             underlying_addr = active_now.get("underlying")
-            underlying_decimals = int(active_now.get("underlying_decimals", token_decimals))
+            underlying_decimals = active_now.get("underlying_decimals", int(token_decimals))
 
             done = 0
             cur = start_dt
@@ -360,10 +443,17 @@ with proto_tabs[1]:
                         wallet, atoken_addr,
                         cur.isoformat(), cur.isoformat(),
                         INFURA_URL, int(token_decimals),
-                        underlying_addr, underlying_decimals
+                        underlying_addr, int(underlying_decimals)
                     )
                 except Exception as e:
-                    prog.empty(); status_ph.error(f"Failed on {cur}: {e}"); return
+                    error_msg = f"Failed on {cur}: {str(e)}"
+                    errors_this_run.append({"date": cur.isoformat(), "error": str(e)})
+                    status_ph.warning(f"⚠️ {error_msg} (continuing...)")
+                    done += 1
+                    prog.progress(min(int(done / total_days * 100), 100),
+                                  text=f"Processed {done}/{total_days} day(s)… ({len(errors_this_run)} errors)")
+                    cur = cur + timedelta(days=1)
+                    continue
 
                 if df_day is not None and not df_day.empty:
                     # tag; no counterparty columns exposed
@@ -378,33 +468,53 @@ with proto_tabs[1]:
                     st.session_state["atoken_accum"] = acc
 
                     table_ph.dataframe(acc, use_container_width=True)
-                    status_ph.info(f"Fetched {cur} ({len(df_day)} row)")
+                    status_ph.info(f"✅ Fetched {cur} ({len(df_day)} row)")
 
                 done += 1
                 prog.progress(min(int(done / total_days * 100), 100), text=f"Processed {done}/{total_days} day(s)…")
                 cur = cur + timedelta(days=1)
 
             prog.empty()
-            status_ph.success(f"Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['atoken_accum'])}")
+            if errors_this_run:
+                st.session_state["atoken_errors"].extend(errors_this_run)
+                status_ph.warning(f"⚠️ Completed with {len(errors_this_run)} errors. Window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['atoken_accum'])}")
+            else:
+                status_ph.success(f"✅ Added window: {start_dt} → {end_dt}. Total rows: {len(st.session_state['atoken_accum'])}")
+            st.session_state["atoken_processing"] = False
 
         if run:
             if not wallet or not INFURA_URL or not atoken_addr:
-                st.error("Enter wallet + INFURA_URL + aToken address.")
+                st.error("⚠️ Please enter a valid wallet address, ensure INFURA_URL is set, and select an aToken.")
             else:
                 run_window_and_stream_atoken(start_dt, end_dt)
 
         accum = st.session_state["atoken_accum"]
         st.markdown("### Accumulated results (Aave aTokens)")
         if not accum.empty:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.metric("Total Days", len(accum))
+            with col2:
+                if "daily_interest" in accum.columns:
+                    total_interest = accum["daily_interest"].sum()
+                    st.metric("Total Interest", f"{total_interest:.6f}")
+            
             st.dataframe(accum, use_container_width=True)
             st.download_button(
-                "Download accumulated CSV",
+                "📥 Download accumulated CSV",
                 accum.to_csv(index=False),
                 file_name="aave_atokens_interest_accumulated.csv",
                 mime="text/csv",
             )
         else:
-            st.info("No results yet. Choose a token, a date window, then run.")
+            st.info("ℹ️ No results yet. Choose a token, a date window, then run.")
+        
+        # Show errors if any
+        if st.session_state.get("atoken_errors"):
+            with st.expander(f"⚠️ Errors ({len(st.session_state['atoken_errors'])})", expanded=False):
+                st.warning("Some days failed to process. You may want to retry these dates.")
+                errors_df = pd.DataFrame(st.session_state["atoken_errors"])
+                st.dataframe(errors_df, use_container_width=True)
 
 # ======================================================
 #                      SETTINGS
