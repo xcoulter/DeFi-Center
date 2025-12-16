@@ -9,25 +9,13 @@ from typing import Optional, Tuple, Iterable, Set
 TRANSFER_SIG = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO_ADDR_TOPIC = "0x" + "0" * 64  # 32-byte topic for address(0)
 
-# Use your corrected Aave v3 pool address here:
-AAVE_ETH_V3_POOL = "0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8".lower()
-
-# Gateways (both variants)
+# Ethereum mainnet Aave v3 default counterparties (underlying flows)
+AAVE_ETH_V3_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2".lower()
 AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY = "0xd01607c3C5eCABa394D8be377a08590149325722".lower()
-AAVE_ETH_V3_WETH_GATEWAY_ONLY     = "0xD322A49006FC828F9B5B37Ab215F99B4E5caB19C".lower()
-AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH = "0x893411580e590D62dDBca8a703d61Cc4A8c7b2b9".lower()
-
-# Underlying WETH token
-WETH_MAINNET = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".lower()
-
-# Default counterparties set (define AFTER the addresses above)
-DEFAULT_AAVE_ETH_V3_COUNTERPARTIES = {
+DEFAULT_AAVE_ETH_V3_COUNTERPARTIES: Set[str] = {
     AAVE_ETH_V3_POOL,
     AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY,
-    AAVE_ETH_V3_WETH_GATEWAY_ONLY,
-    AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH,
 }
-
 
 # ───────────────────────────── Utils ─────────────────────────────
 def _int_hex_safe(x: Optional[str]) -> int:
@@ -112,10 +100,10 @@ def _balance_of(infura_url: str, token: str, wallet: str, block_num: int) -> int
 
 # ───────────────────────────── Logs ─────────────────────────────
 def _get_logs_chunked(infura_url: str, token: str, start_block: int, end_block: int, topics,
-                      stop_at_first: bool = False, chunk_size: int = 200_000):
+                      stop_at_first: bool = False, chunk_size: int = 50_000):
     out = []
     b = start_block
-    INTER_CHUNK_SLEEP = 0.05
+    INTER_CHUNK_SLEEP = 0.25
     while b <= end_block:
         e = min(end_block, b + chunk_size - 1)
         params = [{
@@ -194,7 +182,6 @@ def _underlying_flows_wallet_vs_counterparties(
     start_block: int,
     end_block: int,
     counterparties: Iterable[str],
-    atoken: Optional[str] = None,    # <-- add this
 ) -> Tuple[int, int]:
     """
     Returns (to_cp_wei, from_cp_wei) in UNDERLYING wei:
@@ -203,120 +190,29 @@ def _underlying_flows_wallet_vs_counterparties(
     """
     wtopic = _addr_topic(wallet)
     cps = {c.lower() for c in counterparties}
-    wl = wallet.lower()
+
+    logs_from = _get_logs_chunked(infura_url, underlying_token, start_block, end_block,
+                                  [TRANSFER_SIG, wtopic, None]) or []
+    logs_to   = _get_logs_chunked(infura_url, underlying_token, start_block, end_block,
+                                  [TRANSFER_SIG, None, wtopic]) or []
 
     to_cp = 0
     from_cp = 0
+    wl = wallet.lower()
 
-    # Generic ERC-20 transfers wallet <-> counterparties
-    if underlying_token.lower() != WETH_MAINNET:
-        logs_from = _get_logs_chunked(
-            infura_url, underlying_token, start_block, end_block,
-            [TRANSFER_SIG, _addr_topic(wallet), None]
-        ) or []
-        logs_to = _get_logs_chunked(
-            infura_url, underlying_token, start_block, end_block,
-            [TRANSFER_SIG, None, _addr_topic(wallet)]
-        ) or []
+    for l in logs_from:
+        frm, to = _topics_to_addresses(l.get("topics"))
+        if frm == wl and to in cps:
+            to_cp += _int_hex_safe(l.get("data"))
 
-    # Only count underlying amounts when the SAME TX shows aToken mint/burn for the user
-        for l in logs_from:  # candidate deposits: wallet -> cp
-            frm, to = _topics_to_addresses(l.get("topics"))
-            if frm == wallet.lower() and to in {c.lower() for c in counterparties}:
-                txh = l.get("transactionHash") or ""
-                if atoken:
-                    has_mint, _ = _receipt_has_mint_burn(infura_url, atoken, txh, wallet)
-                    if not has_mint: 
-                        continue  # likely a repay; skip
-                to_cp += _int_hex_safe(l.get("data"))
-
-        for l in logs_to:  # candidate withdrawals: cp -> wallet
-            frm, to = _topics_to_addresses(l.get("topics"))
-            if to == wallet.lower() and frm in {c.lower() for c in counterparties}:
-                txh = l.get("transactionHash") or ""
-                if atoken:
-                    _, has_burn = _receipt_has_mint_burn(infura_url, atoken, txh, wallet)
-                    if not has_burn:
-                        continue  # not a user-initiated withdraw; skip
-                from_cp += _int_hex_safe(l.get("data"))
-    # --- aWETH special-case WITHOUT ETH scans ---
-    # Track WETH transfers gateway <-> pool, initiated by the wallet (ETH wrapping happens inside gateway).
-    if underlying_token.lower() == WETH_MAINNET:
-        GATEWAYS = [
-            AAVE_ETH_V3_WRAPPED_TOKEN_GATEWAY,
-            AAVE_ETH_V3_WETH_GATEWAY_ONLY,
-            AAVE_ETH_V3_WETH_GATEWAY_DEPOSIT_ETH,   # <-- add this
-        ]
-        GATEWAYS = [g.lower() for g in GATEWAYS]
-
-        def _tx_sender_is_wallet(txh: str) -> bool:
-            txh = (txh or "").lower()
-            if txh in tx_sender_cache:
-                return tx_sender_cache[txh]
-            try:
-                tx = _rpc(infura_url, "eth_getTransactionByHash", [txh])
-                frm = (tx.get("from") or "").lower()
-                ok = (frm == wl)
-                tx_sender_cache[txh] = ok
-                return ok
-            except Exception:
-                tx_sender_cache[txh] = False
-                return False
-
-
-        dep_sum = 0  # wallet deposits -> gateway sends WETH to pool
-        wdr_sum = 0  # wallet withdrawals -> pool sends WETH to gateway
-
-        # Narrow, indexed queries: (gw -> pool) and (pool -> gw), per pair
-        for gw in GATEWAYS:
-            # Deposit: gateway -> pool (topic[1]=from, topic[2]=to)
-            logs_dep = _get_logs_chunked(
-                infura_url, WETH_MAINNET, start_block, end_block,
-                [TRANSFER_SIG, _addr_topic(gw), _addr_topic(AAVE_ETH_V3_POOL)]
-            ) or []
-            for l in logs_dep:
-                txh = l.get("transactionHash")
-                if txh and _tx_sender_is_wallet(txh):
-                    dep_sum += _int_hex_safe(l.get("data"))
-
-            # Withdrawal: pool -> gateway
-            logs_wdr = _get_logs_chunked(
-                infura_url, WETH_MAINNET, start_block, end_block,
-                [TRANSFER_SIG, _addr_topic(AAVE_ETH_V3_POOL), _addr_topic(gw)]
-            ) or []
-            for l in logs_wdr:
-                txh = l.get("transactionHash")
-                if txh and _tx_sender_is_wallet(txh):
-                    wdr_sum += _int_hex_safe(l.get("data"))
-        
-        to_cp   += dep_sum     # deposits
-        from_cp += wdr_sum     # withdrawals
+    for l in logs_to:
+        frm, to = _topics_to_addresses(l.get("topics"))
+        if to == wl and frm in cps:
+            from_cp += _int_hex_safe(l.get("data"))
 
     return to_cp, from_cp
 
 # ─────────────── aToken daily interest (UNDERLYING-based) ───────────────
-
-def _receipt_has_mint_burn(infura_url: str, atoken: str, txh: str, wallet: str):
-    """Return (has_mint_to_wallet, has_burn_from_wallet) for the aToken within this tx."""
-    rc = _rpc(infura_url, "eth_getTransactionReceipt", [txh])
-    if not rc or not rc.get("logs"): return False, False
-    atok = atoken.lower()
-    wtopic = _addr_topic(wallet)
-    zero = ZERO_ADDR_TOPIC
-    has_mint = False
-    has_burn = False
-    for lg in rc["logs"]:
-        if (lg.get("address") or "").lower() != atok: 
-            continue
-        tps = lg.get("topics") or []
-        if len(tps) < 3 or (tps[0] or "").lower() != TRANSFER_SIG.lower():
-            continue
-        # Transfer(from=topic1, to=topic2)
-        if tps[1] == zero and tps[2] == wtopic: has_mint = True      # 0x0 -> wallet
-        if tps[1] == wtopic and tps[2] == zero: has_burn = True      # wallet -> 0x0
-        if has_mint and has_burn: break
-    return has_mint, has_burn
-
 def get_atoken_interest_range(
     wallet: str,
     token: str,                     # aToken (e.g., aUSDC, aWETH)
@@ -328,13 +224,19 @@ def get_atoken_interest_range(
     underlying_decimals: Optional[int] = None,       # REQUIRED
     counterparties: Optional[Iterable[str]] = None,  # optional extra Aave addresses
     include_default_aave_eth_v3: bool = True,
+    single_period: bool = False,    # If True, calculate as one period (much faster)
 ) -> pd.DataFrame:
     """
-    Daily interest in UNDERLYING units using:
+    Interest in UNDERLYING units using:
       - aToken.balanceOf for start/end (already underlying-equivalent)
       - UNDERLYING ERC-20 transfers wallet<->Aave for deposits/withdrawals
 
+    Continuous windows: for every row after the first, start_block == previous end_block
+
     interest = (end_balance - start_balance) + (withdrawals - deposits)
+    
+    Args:
+        single_period: If True, calculate as one period instead of day-by-day (much faster for long ranges)
     """
     infura_url = (infura_url or os.getenv("INFURA_URL","")).strip()
     if not infura_url:
@@ -351,16 +253,6 @@ def get_atoken_interest_range(
     cp: Set[str] = set(a.lower() for a in (counterparties or []))
     if include_default_aave_eth_v3:
         cp |= DEFAULT_AAVE_ETH_V3_COUNTERPARTIES
-        
-    cp.add(token.lower())   # ensure the aToken/pool itself is always included
-    
-    # 🔒 For non-WETH, restrict counterparties to JUST the aToken/pool
-    if (underlying_token or "").lower() != WETH_MAINNET:
-        cp = {token.lower()}
-        
-    # ---- aWETH: include both Pool and the specific WETH Gateway ----
-    if (underlying_token or "").lower() == WETH_MAINNET:
-        cp |= {AAVE_ETH_V3_WETH_GATEWAY_ONLY}
 
     # Dates
     start_dt = datetime.strptime(start_iso, "%Y-%m-%d").date()
@@ -371,6 +263,59 @@ def get_atoken_interest_range(
     latest = _latest_block(infura_url)
     latest_ts = _int_hex_safe(_rpc(infura_url, "eth_getBlockByNumber", [hex(latest), False]).get("timestamp"))
 
+    # Single period mode: calculate once for the entire range (much faster)
+    if single_period or start_dt == end_dt:
+        start_ts = int(datetime(start_dt.year, start_dt.month, start_dt.day, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+        end_ts   = int(datetime(end_dt.year, end_dt.month, end_dt.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+        
+        if start_ts > latest_ts:
+            return pd.DataFrame([])
+        if end_ts > latest_ts:
+            end_ts = latest_ts
+
+        start_blk = _block_by_time(infura_url, start_ts, "after")
+        end_blk = _block_by_time(infura_url, end_ts, "before")
+        if end_blk < start_blk:
+            end_blk = start_blk
+
+        # aToken balances (already underlying-equivalent)
+        start_bal_raw = _balance_of(infura_url, token, wallet, start_blk)
+        end_bal_raw   = _balance_of(infura_url, token, wallet, end_blk)
+
+        # UNDERLYING flows (wallet <-> Aave counterparties)
+        to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
+            infura_url, underlying_token, wallet, start_blk, end_blk, cp
+        )
+
+        # Convert underlying (U_DEC) to balance units (BAL_DEC) so all columns align
+        if U_DEC == BAL_DEC:
+            deposits_raw = to_cp_u
+            withdrawals_raw = from_cp_u
+        elif U_DEC > BAL_DEC:
+            scale = 10 ** (U_DEC - BAL_DEC)   # scale down
+            deposits_raw = to_cp_u // scale
+            withdrawals_raw = from_cp_u // scale
+        else:
+            scale = 10 ** (BAL_DEC - U_DEC)   # scale up
+            deposits_raw = to_cp_u * scale
+            withdrawals_raw = from_cp_u * scale
+
+        net_transfers_raw = withdrawals_raw - deposits_raw
+        interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
+
+        return pd.DataFrame([{
+            "date": start_dt.isoformat() if start_dt == end_dt else f"{start_dt.isoformat()} to {end_dt.isoformat()}",
+            "start_block": start_blk,
+            "end_block": end_blk,
+            "start_balance":   start_bal_raw / UNIT_BAL,
+            "end_balance":     end_bal_raw   / UNIT_BAL,
+            "deposits":        deposits_raw  / UNIT_BAL,
+            "withdrawals":     withdrawals_raw / UNIT_BAL,
+            "net_transfers":   net_transfers_raw / UNIT_BAL,
+            "daily_interest":  interest_raw / UNIT_BAL,
+        }])
+
+    # Day-by-day mode: original behavior for daily calculations
     rows = []
     prev_end_blk: Optional[int] = None
 
@@ -398,27 +343,21 @@ def get_atoken_interest_range(
 
         # UNDERLYING flows (wallet <-> Aave counterparties)
         to_cp_u, from_cp_u = _underlying_flows_wallet_vs_counterparties(
-            infura_url, underlying_token, wallet, start_blk, end_blk, cp,
-            atoken=token
+            infura_url, underlying_token, wallet, start_blk, end_blk, cp
         )
 
-
-        # ✅ FIX: deposits and withdrawals both from underlying flows
-        dep_u = to_cp_u      # wallet -> Aave (deposit)
-        wdr_u = from_cp_u    # Aave -> wallet (withdrawal)
-
-        # Convert underlying units (U_DEC) to balance units (BAL_DEC) to align with balances
+        # Convert underlying (U_DEC) to balance units (BAL_DEC) so all columns align
         if U_DEC == BAL_DEC:
-            deposits_raw = dep_u
-            withdrawals_raw = wdr_u
+            deposits_raw = to_cp_u
+            withdrawals_raw = from_cp_u
         elif U_DEC > BAL_DEC:
             scale = 10 ** (U_DEC - BAL_DEC)   # scale down
-            deposits_raw = dep_u // scale
-            withdrawals_raw = wdr_u // scale
+            deposits_raw = to_cp_u // scale
+            withdrawals_raw = from_cp_u // scale
         else:
             scale = 10 ** (BAL_DEC - U_DEC)   # scale up
-            deposits_raw = dep_u * scale
-            withdrawals_raw = wdr_u * scale
+            deposits_raw = to_cp_u * scale
+            withdrawals_raw = from_cp_u * scale
 
         net_transfers_raw = withdrawals_raw - deposits_raw
         interest_raw = (end_bal_raw - start_bal_raw) + net_transfers_raw
