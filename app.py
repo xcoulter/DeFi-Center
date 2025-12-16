@@ -168,8 +168,8 @@ with proto_tabs[0]:
             end_dt = st.date_input("End date (UTC)", value=safe_suggested_end, min_value=start_dt, max_value=yday, key="steth_end")
 
         @st.cache_data(show_spinner=False, ttl=900)
-        def _cached_range(wallet_addr: str, start_iso: str, end_iso: str, rpc_url: str) -> pd.DataFrame:
-            return get_steth_rebases_range(wallet_addr, start_iso, end_iso, infura_url=rpc_url)
+        def _cached_range(wallet_addr: str, start_iso: str, end_iso: str, rpc_url: str, single_period: bool = False) -> pd.DataFrame:
+            return get_steth_rebases_range(wallet_addr, start_iso, end_iso, infura_url=rpc_url, single_period=single_period)
 
         a1, a2, a3 = st.columns([1, 1, 1])
         with a1:
@@ -217,7 +217,9 @@ with proto_tabs[0]:
                 done = 0
                 for period_start, period_end in date_ranges:
                     try:
-                        df_period = _cached_range(wallet, period_start.isoformat(), period_end.isoformat(), INFURA_URL)
+                        # Use single_period mode for Weekly/Monthly (much faster)
+                        use_single_period = (calc_frequency != "Daily")
+                        df_period = _cached_range(wallet, period_start.isoformat(), period_end.isoformat(), INFURA_URL, use_single_period)
                     except Exception as e:
                         error_msg = f"Failed on {period_start} → {period_end}: {str(e)}"
                         errors_this_run.append({"date_range": f"{period_start} → {period_end}", "error": str(e)})
@@ -228,8 +230,8 @@ with proto_tabs[0]:
                         continue
 
                     if df_period is not None and not df_period.empty:
-                        # For weekly/monthly, aggregate the daily data
-                        if calc_frequency != "Daily" and len(df_period) > 1:
+                        # Note: single_period mode already returns aggregated data, no need to re-aggregate
+                        if False:  # Disabled - single_period handles this
                             # Aggregate multiple days into one row
                             aggregated = {
                                 "date": f"{period_start.isoformat()} to {period_end.isoformat()}",
@@ -271,7 +273,9 @@ with proto_tabs[0]:
             done = 0
             for period_start, period_end in date_ranges:
                 try:
-                    df_period = _cached_range(wallet, period_start.isoformat(), period_end.isoformat(), INFURA_URL)
+                    # Use single_period mode for Weekly/Monthly (much faster)
+                    use_single_period = (calc_frequency != "Daily")
+                    df_period = _cached_range(wallet, period_start.isoformat(), period_end.isoformat(), INFURA_URL, use_single_period)
                 except Exception as e:
                     error_msg = f"Failed on {period_start} → {period_end}: {str(e)}"
                     errors_this_run.append({"date_range": f"{period_start} → {period_end}", "error": str(e)})
@@ -282,8 +286,8 @@ with proto_tabs[0]:
                     continue
 
                 if df_period is not None and not df_period.empty:
-                    # For weekly/monthly, aggregate the daily data
-                    if calc_frequency != "Daily" and len(df_period) > 1:
+                    # Note: single_period mode already returns aggregated data, no need to re-aggregate
+                    if False:  # Disabled - single_period handles this
                         aggregated = {
                             "date": f"{period_start.isoformat()} to {period_end.isoformat()}",
                             "start_block": df_period.iloc[0]["start_block"],
@@ -504,7 +508,7 @@ with proto_tabs[1]:
 
         @st.cache_data(show_spinner=False, ttl=900)
         def _cached_atoken(wallet_addr: str, token: str, start_iso: str, end_iso: str,
-                           rpc_url: str, dec: int, underlying_addr: str, underlying_decimals: int) -> pd.DataFrame:
+                           rpc_url: str, dec: int, underlying_addr: str, underlying_decimals: int, single_period: bool = False) -> pd.DataFrame:
             return get_atoken_interest_range(
                 wallet_addr, token, start_iso, end_iso,
                 infura_url=rpc_url,
@@ -512,6 +516,7 @@ with proto_tabs[1]:
                 underlying_token=underlying_addr,
                 underlying_decimals=underlying_decimals,
                 include_default_aave_eth_v3=True,
+                single_period=single_period,
             )
 
         a1, a2, a3 = st.columns([1, 1, 1])
@@ -564,11 +569,14 @@ with proto_tabs[1]:
             done = 0
             for period_start, period_end in date_ranges:
                 try:
+                    # Use single_period mode for Weekly/Monthly (much faster)
+                    use_single_period = (aave_calc_frequency != "Daily")
                     df_period = _cached_atoken(
                         wallet, atoken_addr,
                         period_start.isoformat(), period_end.isoformat(),
                         INFURA_URL, int(token_decimals),
-                        underlying_addr, int(underlying_decimals)
+                        underlying_addr, int(underlying_decimals),
+                        use_single_period
                     )
                 except Exception as e:
                     error_msg = f"Failed on {period_start} → {period_end}: {str(e)}"
@@ -580,8 +588,8 @@ with proto_tabs[1]:
                     continue
 
                 if df_period is not None and not df_period.empty:
-                    # For weekly/monthly, aggregate the daily data
-                    if aave_calc_frequency != "Daily" and len(df_period) > 1:
+                    # Note: single_period mode already returns aggregated data, no need to re-aggregate
+                    if False:  # Disabled - single_period handles this
                         aggregated = {
                             "date": f"{period_start.isoformat()} to {period_end.isoformat()}",
                             "start_block": df_period.iloc[0]["start_block"],
