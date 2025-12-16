@@ -90,7 +90,7 @@ with proto_tabs[0]:
 
     lido_tabs = st.tabs(["stETH Rebasing Rewards"])
     with lido_tabs[0]:
-        st.subheader("stETH Rebasing Rewards — run by date range (≤ 180 days per run)")
+        st.subheader("stETH Rebasing Rewards — run by date range")
 
         c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
         with c1:
@@ -117,7 +117,12 @@ with proto_tabs[0]:
                         except Exception as e:
                             st.error(f"❌ Failed to locate first activity: {e}")
         with c4:
-            st.caption("Tip: Run multiple adjacent windows (≤ 180 days). Results accumulate below and can be downloaded as one CSV.")
+            if calc_frequency == "Daily":
+                st.caption("💡 Tip: Daily mode works best for ranges up to 90 days. Use Weekly/Monthly for longer periods.")
+            elif calc_frequency == "Weekly":
+                st.caption("💡 Tip: Weekly mode can handle 1-2 years efficiently. Results accumulate below.")
+            else:
+                st.caption("💡 Tip: Monthly mode is perfect for multi-year analysis. Very fast!")
 
         today = date.today()
         yday = today - timedelta(days=1)
@@ -126,16 +131,33 @@ with proto_tabs[0]:
 
         def day_after_last_accum():
             if accum.empty:
-                return first_activity or (yday - timedelta(days=179))
+                # Default starting point based on frequency
+                if calc_frequency == "Daily":
+                    default_days = 30
+                elif calc_frequency == "Weekly":
+                    default_days = 180
+                else:  # Monthly
+                    default_days = 365
+                return first_activity or (yday - timedelta(days=default_days))
             last_iso = str(accum["date"].max())
             try:
+                # Handle both single dates and date ranges
+                if " to " in last_iso:
+                    last_iso = last_iso.split(" to ")[1]
                 last_d = datetime.strptime(last_iso, "%Y-%m-%d").date()
             except Exception:
-                last_d = yday - timedelta(days=179)
+                last_d = yday - timedelta(days=30)
             return min(last_d + timedelta(days=1), yday)
 
         suggested_start = day_after_last_accum()
-        suggested_end   = min(suggested_start + timedelta(days=179), yday)
+        # Suggest different ranges based on frequency
+        if calc_frequency == "Daily":
+            suggested_days = 30
+        elif calc_frequency == "Weekly":
+            suggested_days = 180
+        else:  # Monthly
+            suggested_days = 365
+        suggested_end = min(suggested_start + timedelta(days=suggested_days), yday)
 
         r1, r2 = st.columns(2)
         with r1:
@@ -170,7 +192,14 @@ with proto_tabs[0]:
         def run_window_and_stream(start_dt: date, end_dt: date):
             total_days = (end_dt - start_dt).days + 1
             if total_days <= 0: st.info("ℹ️ Empty window."); return
-            if total_days > 180: st.error(f"❌ Window too large: {total_days} days. Please run ≤ 180 days per call."); return
+            
+            # Smart warnings based on frequency
+            if calc_frequency == "Daily" and total_days > 180:
+                st.warning(f"⚠️ Large range ({total_days} days) in Daily mode may be slow. Consider using Weekly or Monthly for faster results.")
+            elif calc_frequency == "Weekly" and total_days > 730:  # 2 years
+                st.warning(f"⚠️ Very large range ({total_days} days). This may take a while. Consider using Monthly mode.")
+            elif total_days > 3650:  # 10 years
+                st.warning(f"⚠️ Extremely large range ({total_days} days / {total_days//365} years). This will take significant time.")
 
             # Set processing flag
             st.session_state["steth_processing"] = True
@@ -435,16 +464,33 @@ with proto_tabs[1]:
 
         def day_after_last_accum_any():
             if accum.empty:
-                return first_activity or (yday - timedelta(days=179))
+                # Default starting point based on frequency
+                if aave_calc_frequency == "Daily":
+                    default_days = 30
+                elif aave_calc_frequency == "Weekly":
+                    default_days = 180
+                else:  # Monthly
+                    default_days = 365
+                return first_activity or (yday - timedelta(days=default_days))
             last_iso = str(accum["date"].max())
             try:
+                # Handle both single dates and date ranges
+                if " to " in last_iso:
+                    last_iso = last_iso.split(" to ")[1]
                 last_d = datetime.strptime(last_iso, "%Y-%m-%d").date()
             except Exception:
-                last_d = yday - timedelta(days=179)
+                last_d = yday - timedelta(days=30)
             return min(last_d + timedelta(days=1), yday)
 
         suggested_start = day_after_last_accum_any()
-        suggested_end   = min(suggested_start + timedelta(days=179), yday)
+        # Suggest different ranges based on frequency
+        if aave_calc_frequency == "Daily":
+            suggested_days = 30
+        elif aave_calc_frequency == "Weekly":
+            suggested_days = 180
+        else:  # Monthly
+            suggested_days = 365
+        suggested_end = min(suggested_start + timedelta(days=suggested_days), yday)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -489,7 +535,14 @@ with proto_tabs[1]:
         def run_window_and_stream_atoken(start_dt: date, end_dt: date):
             total_days = (end_dt - start_dt).days + 1
             if total_days <= 0: st.info("ℹ️ Empty window."); return
-            if total_days > 180: st.error(f"❌ Window too large: {total_days} days. Please run ≤ 180 days."); return
+            
+            # Smart warnings based on frequency
+            if aave_calc_frequency == "Daily" and total_days > 180:
+                st.warning(f"⚠️ Large range ({total_days} days) in Daily mode may be slow. Consider using Weekly or Monthly for faster results.")
+            elif aave_calc_frequency == "Weekly" and total_days > 730:  # 2 years
+                st.warning(f"⚠️ Very large range ({total_days} days). This may take a while. Consider using Monthly mode.")
+            elif total_days > 3650:  # 10 years
+                st.warning(f"⚠️ Extremely large range ({total_days} days / {total_days//365} years). This will take significant time.")
 
             # Set processing flag
             st.session_state["atoken_processing"] = True
