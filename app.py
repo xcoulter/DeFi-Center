@@ -35,6 +35,31 @@ def validate_ethereum_address(address: str) -> bool:
     except ValueError:
         return False
 
+def generate_date_ranges(start_date: date, end_date: date, frequency: str):
+    """Generate date ranges based on frequency (daily, weekly, monthly)"""
+    ranges = []
+    current = start_date
+    
+    while current <= end_date:
+        if frequency == "Daily":
+            period_end = current
+        elif frequency == "Weekly":
+            period_end = min(current + timedelta(days=6), end_date)
+        elif frequency == "Monthly":
+            # Move to end of month or end_date, whichever is earlier
+            if current.month == 12:
+                next_month = current.replace(year=current.year + 1, month=1, day=1)
+            else:
+                next_month = current.replace(month=current.month + 1, day=1)
+            period_end = min(next_month - timedelta(days=1), end_date)
+        else:
+            period_end = current
+        
+        ranges.append((current, period_end))
+        current = period_end + timedelta(days=1)
+    
+    return ranges
+
 # ---- Global inputs (shared across tabs) ----
 with st.container():
     wallet = st.text_input("Wallet address (0x…)", help="Enter a valid Ethereum address (42 characters starting with 0x)", key="wallet_input")
@@ -67,10 +92,16 @@ with proto_tabs[0]:
     with lido_tabs[0]:
         st.subheader("stETH Rebasing Rewards — run by date range (≤ 180 days per run)")
 
-        c1, c2, c3 = st.columns([1, 1, 2])
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
         with c1:
-            stream_rows = st.toggle("Stream rows live", value=True, help="Update UI after each day finishes")
+            calc_frequency = st.selectbox(
+                "Frequency",
+                ["Daily", "Weekly", "Monthly"],
+                help="Daily: Most detailed, slower. Weekly: ~7x faster. Monthly: ~30x faster"
+            )
         with c2:
+            stream_rows = st.toggle("Stream live", value=True, help="Update UI after each period finishes")
+        with c3:
             if st.button("Find first stETH activity", disabled=st.session_state.get("steth_processing", False)):
                 if not wallet or not INFURA_URL:
                     st.error("⚠️ Please enter a valid wallet address and ensure INFURA_URL is set.")
@@ -85,7 +116,7 @@ with proto_tabs[0]:
                                 st.success(f"✅ First activity (UTC): {fa.isoformat()}")
                         except Exception as e:
                             st.error(f"❌ Failed to locate first activity: {e}")
-        with c3:
+        with c4:
             st.caption("Tip: Run multiple adjacent windows (≤ 180 days). Results accumulate below and can be downloaded as one CSV.")
 
         today = date.today()
@@ -149,36 +180,54 @@ with proto_tabs[0]:
             prog = st.progress(0, text="Starting…")
             errors_this_run = []
 
+            # Generate date ranges based on frequency
+            date_ranges = generate_date_ranges(start_dt, end_dt, calc_frequency)
+            total_periods = len(date_ranges)
+
             if stream_rows:
-                done = 0; cur = start_dt
-                while cur <= end_dt:
+                done = 0
+                for period_start, period_end in date_ranges:
                     try:
-                        df_day = _cached_range(wallet, cur.isoformat(), cur.isoformat(), INFURA_URL)
+                        df_period = _cached_range(wallet, period_start.isoformat(), period_end.isoformat(), INFURA_URL)
                     except Exception as e:
-                        error_msg = f"Failed on {cur}: {str(e)}"
-                        errors_this_run.append({"date": cur.isoformat(), "error": str(e)})
+                        error_msg = f"Failed on {period_start} → {period_end}: {str(e)}"
+                        errors_this_run.append({"date_range": f"{period_start} → {period_end}", "error": str(e)})
                         status_ph.warning(f"⚠️ {error_msg} (continuing...)")
                         done += 1
-                        prog.progress(min(int(done / total_days * 100), 100),
-                                      text=f"Processed {done}/{total_days} day(s)… ({len(errors_this_run)} errors)")
-                        cur = cur + timedelta(days=1)
+                        prog.progress(min(int(done / total_periods * 100), 100),
+                                      text=f"Processed {done}/{total_periods} period(s)… ({len(errors_this_run)} errors)")
                         continue
 
-                    if df_day is not None and not df_day.empty:
+                    if df_period is not None and not df_period.empty:
+                        # For weekly/monthly, aggregate the daily data
+                        if calc_frequency != "Daily" and len(df_period) > 1:
+                            # Aggregate multiple days into one row
+                            aggregated = {
+                                "date": f"{period_start.isoformat()} to {period_end.isoformat()}",
+                                "start_block": df_period.iloc[0]["start_block"],
+                                "end_block": df_period.iloc[-1]["end_block"],
+                                "start_balance_steth": df_period.iloc[0]["start_balance_steth"],
+                                "end_balance_steth": df_period.iloc[-1]["end_balance_steth"],
+                                "transfers_in_steth": df_period["transfers_in_steth"].sum(),
+                                "transfers_out_steth": df_period["transfers_out_steth"].sum(),
+                                "net_transfers_steth": df_period["net_transfers_steth"].sum(),
+                                "daily_rebase_reward_steth": df_period["daily_rebase_reward_steth"].sum(),
+                            }
+                            df_period = pd.DataFrame([aggregated])
+                        
                         acc = st.session_state["steth_accum"]
-                        acc = pd.concat([acc, df_day], ignore_index=True)
+                        acc = pd.concat([acc, df_period], ignore_index=True)
                         acc.drop_duplicates(subset=["date","start_block","end_block"], keep="last", inplace=True)
                         acc.sort_values("date", inplace=True)
                         acc.reset_index(drop=True, inplace=True)
                         st.session_state["steth_accum"] = acc
 
                         table_ph.dataframe(acc, use_container_width=True)
-                        status_ph.info(f"✅ Fetched {cur} ({len(df_day)} row)")
+                        status_ph.info(f"✅ Fetched {period_start} → {period_end} ({len(df_period)} row)")
 
                     done += 1
-                    prog.progress(min(int(done / total_days * 100), 100),
-                                  text=f"Processed {done}/{total_days} day(s)…")
-                    cur = cur + timedelta(days=1)
+                    prog.progress(min(int(done / total_periods * 100), 100),
+                                  text=f"Processed {done}/{total_periods} period(s)…")
 
                 prog.empty()
                 if errors_this_run:
@@ -189,37 +238,47 @@ with proto_tabs[0]:
                 st.session_state["steth_processing"] = False
                 return
 
-            # slice mode
-            SLICE_DAYS = 30
+            # Non-streaming mode (batch mode)
             done = 0
-            cur_start = start_dt
-            while cur_start <= end_dt:
-                cur_end = min(cur_start + timedelta(days=SLICE_DAYS - 1), end_dt)
+            for period_start, period_end in date_ranges:
                 try:
-                    df_slice = _cached_range(wallet, cur_start.isoformat(), cur_end.isoformat(), INFURA_URL)
+                    df_period = _cached_range(wallet, period_start.isoformat(), period_end.isoformat(), INFURA_URL)
                 except Exception as e:
-                    error_msg = f"Failed on slice {cur_start} → {cur_end}: {str(e)}"
-                    errors_this_run.append({"date_range": f"{cur_start} → {cur_end}", "error": str(e)})
+                    error_msg = f"Failed on {period_start} → {period_end}: {str(e)}"
+                    errors_this_run.append({"date_range": f"{period_start} → {period_end}", "error": str(e)})
                     status_ph.warning(f"⚠️ {error_msg} (continuing...)")
-                    done += (cur_end - cur_start).days + 1
-                    prog.progress(min(int(done / total_days * 100), 100),
-                                  text=f"Processed {done}/{total_days} day(s)… ({len(errors_this_run)} errors)")
-                    cur_start = cur_end + timedelta(days=1)
+                    done += 1
+                    prog.progress(min(int(done / total_periods * 100), 100),
+                                  text=f"Processed {done}/{total_periods} period(s)… ({len(errors_this_run)} errors)")
                     continue
 
-                if df_slice is not None and not df_slice.empty:
+                if df_period is not None and not df_period.empty:
+                    # For weekly/monthly, aggregate the daily data
+                    if calc_frequency != "Daily" and len(df_period) > 1:
+                        aggregated = {
+                            "date": f"{period_start.isoformat()} to {period_end.isoformat()}",
+                            "start_block": df_period.iloc[0]["start_block"],
+                            "end_block": df_period.iloc[-1]["end_block"],
+                            "start_balance_steth": df_period.iloc[0]["start_balance_steth"],
+                            "end_balance_steth": df_period.iloc[-1]["end_balance_steth"],
+                            "transfers_in_steth": df_period["transfers_in_steth"].sum(),
+                            "transfers_out_steth": df_period["transfers_out_steth"].sum(),
+                            "net_transfers_steth": df_period["net_transfers_steth"].sum(),
+                            "daily_rebase_reward_steth": df_period["daily_rebase_reward_steth"].sum(),
+                        }
+                        df_period = pd.DataFrame([aggregated])
+                    
                     acc = st.session_state["steth_accum"]
-                    acc = pd.concat([acc, df_slice], ignore_index=True)
+                    acc = pd.concat([acc, df_period], ignore_index=True)
                     acc.drop_duplicates(subset=["date","start_block","end_block"], keep="last", inplace=True)
                     acc.sort_values("date", inplace=True)
                     acc.reset_index(drop=True, inplace=True)
                     st.session_state["steth_accum"] = acc
                     table_ph.dataframe(acc, use_container_width=True)
 
-                done += (cur_end - cur_start).days + 1
-                prog.progress(min(int(done / total_days * 100), 100),
-                              text=f"Processed {done}/{total_days} day(s)…")
-                cur_start = cur_end + timedelta(days=1)
+                done += 1
+                prog.progress(min(int(done / total_periods * 100), 100),
+                              text=f"Processed {done}/{total_periods} period(s)…")
 
             prog.empty()
             if errors_this_run:
@@ -240,7 +299,7 @@ with proto_tabs[0]:
         if not accum.empty:
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.metric("Total Days", len(accum))
+                st.metric("Total Periods", len(accum))
             with col2:
                 if "daily_rebase_reward_steth" in accum.columns:
                     total_rewards = accum["daily_rebase_reward_steth"].sum()
@@ -304,7 +363,17 @@ with proto_tabs[1]:
     aave_tabs = st.tabs(["aToken Interest (v3)"])
 
     with aave_tabs[0]:
-        st.subheader("aToken Interest — daily accrual in underlying units")
+        st.subheader("aToken Interest — accrual in underlying units")
+
+        # Frequency selector
+        freq_col, spacer_col = st.columns([2, 4])
+        with freq_col:
+            aave_calc_frequency = st.selectbox(
+                "Frequency",
+                ["Daily", "Weekly", "Monthly"],
+                help="Daily: Most detailed, slower. Weekly: ~7x faster. Monthly: ~30x faster",
+                key="aave_frequency"
+            )
 
         col0, col1, col2 = st.columns([2, 2, 2])
         with col0:
@@ -435,44 +504,60 @@ with proto_tabs[1]:
             underlying_addr = active_now.get("underlying")
             underlying_decimals = active_now.get("underlying_decimals", int(token_decimals))
 
+            # Generate date ranges based on frequency
+            date_ranges = generate_date_ranges(start_dt, end_dt, aave_calc_frequency)
+            total_periods = len(date_ranges)
+
             done = 0
-            cur = start_dt
-            while cur <= end_dt:
+            for period_start, period_end in date_ranges:
                 try:
-                    df_day = _cached_atoken(
+                    df_period = _cached_atoken(
                         wallet, atoken_addr,
-                        cur.isoformat(), cur.isoformat(),
+                        period_start.isoformat(), period_end.isoformat(),
                         INFURA_URL, int(token_decimals),
                         underlying_addr, int(underlying_decimals)
                     )
                 except Exception as e:
-                    error_msg = f"Failed on {cur}: {str(e)}"
-                    errors_this_run.append({"date": cur.isoformat(), "error": str(e)})
+                    error_msg = f"Failed on {period_start} → {period_end}: {str(e)}"
+                    errors_this_run.append({"date_range": f"{period_start} → {period_end}", "error": str(e)})
                     status_ph.warning(f"⚠️ {error_msg} (continuing...)")
                     done += 1
-                    prog.progress(min(int(done / total_days * 100), 100),
-                                  text=f"Processed {done}/{total_days} day(s)… ({len(errors_this_run)} errors)")
-                    cur = cur + timedelta(days=1)
+                    prog.progress(min(int(done / total_periods * 100), 100),
+                                  text=f"Processed {done}/{total_periods} period(s)… ({len(errors_this_run)} errors)")
                     continue
 
-                if df_day is not None and not df_day.empty:
+                if df_period is not None and not df_period.empty:
+                    # For weekly/monthly, aggregate the daily data
+                    if aave_calc_frequency != "Daily" and len(df_period) > 1:
+                        aggregated = {
+                            "date": f"{period_start.isoformat()} to {period_end.isoformat()}",
+                            "start_block": df_period.iloc[0]["start_block"],
+                            "end_block": df_period.iloc[-1]["end_block"],
+                            "start_balance": df_period.iloc[0]["start_balance"],
+                            "end_balance": df_period.iloc[-1]["end_balance"],
+                            "deposits": df_period["deposits"].sum(),
+                            "withdrawals": df_period["withdrawals"].sum(),
+                            "net_transfers": df_period["net_transfers"].sum(),
+                            "daily_interest": df_period["daily_interest"].sum(),
+                        }
+                        df_period = pd.DataFrame([aggregated])
+                    
                     # tag; no counterparty columns exposed
-                    df_day["token_address"] = atoken_addr
-                    df_day["underlying_address"] = underlying_addr
+                    df_period["token_address"] = atoken_addr
+                    df_period["underlying_address"] = underlying_addr
 
                     acc = st.session_state["atoken_accum"]
-                    acc = pd.concat([acc, df_day], ignore_index=True)
+                    acc = pd.concat([acc, df_period], ignore_index=True)
                     acc.drop_duplicates(subset=["date","start_block","end_block","token_address"], keep="last", inplace=True)
                     acc.sort_values(["token_address","date"], inplace=True)
                     acc.reset_index(drop=True, inplace=True)
                     st.session_state["atoken_accum"] = acc
 
                     table_ph.dataframe(acc, use_container_width=True)
-                    status_ph.info(f"✅ Fetched {cur} ({len(df_day)} row)")
+                    status_ph.info(f"✅ Fetched {period_start} → {period_end} ({len(df_period)} row)")
 
                 done += 1
-                prog.progress(min(int(done / total_days * 100), 100), text=f"Processed {done}/{total_days} day(s)…")
-                cur = cur + timedelta(days=1)
+                prog.progress(min(int(done / total_periods * 100), 100), text=f"Processed {done}/{total_periods} period(s)…")
 
             prog.empty()
             if errors_this_run:
@@ -493,7 +578,7 @@ with proto_tabs[1]:
         if not accum.empty:
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.metric("Total Days", len(accum))
+                st.metric("Total Periods", len(accum))
             with col2:
                 if "daily_interest" in accum.columns:
                     total_interest = accum["daily_interest"].sum()
